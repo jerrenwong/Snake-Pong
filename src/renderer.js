@@ -78,14 +78,21 @@ export function createRenderer(canvas) {
       const cx   = px + CELL / 2;
       const cy   = py + CELL / 2;
 
+      // Fade out in the last 3 seconds before field expiry
+      const timeLeft = p.fieldExpiresAt - now;
+      const FADE_START = 3_000;
+      const baseAlpha = timeLeft < FADE_START
+        ? Math.max(0.15, timeLeft / FADE_START) * (0.5 + 0.5 * Math.sin(now / 120))
+        : 1;
+
       // Pulsing glow
       const pulse = 0.5 + 0.5 * Math.sin(now / 300);
-      ctx.globalAlpha = 0.3 + 0.25 * pulse;
+      ctx.globalAlpha = baseAlpha * (0.3 + 0.25 * pulse);
       ctx.fillStyle   = def.glow;
       ctx.beginPath();
       ctx.arc(cx, cy, r + 4, 0, Math.PI * 2);
       ctx.fill();
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = baseAlpha;
 
       // Filled circle
       ctx.fillStyle = def.color;
@@ -99,6 +106,7 @@ export function createRenderer(canvas) {
       ctx.textAlign  = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(def.label, cx, cy);
+      ctx.globalAlpha = 1;
     }
     ctx.textAlign    = 'left';
     ctx.textBaseline = 'alphabetic';

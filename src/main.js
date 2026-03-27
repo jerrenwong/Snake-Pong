@@ -8,7 +8,7 @@ import { startBgm, stopBgm, pauseBgm, resumeBgm,
          sfxPowerup }                                     from './audio.js';
 import { POWERUP_DEFS, spawnPowerup,
          SPAWN_COOLDOWN_MS, SPAWN_EXPECTED_MS,
-         MAX_ON_FIELD }                                   from './powerups.js';
+         FIELD_EXPIRE_MS }                                from './powerups.js';
 import { WALL_L, WALL_R }                                 from './constants.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -46,17 +46,20 @@ let snakeMultiplier = 1; // snake moves N× per ball tick (1, 2, or 3)
 
 // ── Power-up state ────────────────────────────────────────────────────────────
 let powerupsEnabled      = false;
-let powerupsOnField      = [];   // [{ uid, type, x, y }]
+let powerupsOnField      = [];   // [{ uid, type, player, x, y, fieldExpiresAt }]
 let activeEffects        = [];   // [{ uid, type, player, expiresAt, totalDuration }]
 let ballSpeedBoostPlayer = null; // 1 | 2 | null
-let nextSpawnAt          = 0;    // performance.now() timestamp
+let nextSpawnAt1         = 0;    // per-player spawn timers
+let nextSpawnAt2         = 0;
 let _effectUid           = 0;
 
 function resetPowerupState() {
   powerupsOnField      = [];
   activeEffects        = [];
   ballSpeedBoostPlayer = null;
-  nextSpawnAt          = performance.now() + SPAWN_COOLDOWN_MS;
+  const now = performance.now();
+  nextSpawnAt1 = now + SPAWN_COOLDOWN_MS;
+  nextSpawnAt2 = now + SPAWN_COOLDOWN_MS;
 }
 
 function applyEffect(type, player) {
@@ -144,14 +147,29 @@ function loop(ts) {
   lastTs = ts;
 
   if (phase === 'playing') {
-    // Power-up spawn: 5s cooldown after each spawn, then geometric (E[wait]=10s)
-    if (powerupsEnabled && ts >= nextSpawnAt && powerupsOnField.length < MAX_ON_FIELD) {
-      if (Math.random() < dt / SPAWN_EXPECTED_MS) {
-        const pu = spawnPowerup(s1, s2, powerupsOnField);
-        if (pu) {
-          powerupsOnField.push(pu);
-          nextSpawnAt = ts + SPAWN_COOLDOWN_MS;
+    // Power-up spawn: per-player, max 1 on field each, 5s cooldown + geometric E[wait]=10s
+    if (powerupsEnabled) {
+      for (const [player, getTimer, setTimer] of [
+        [1, () => nextSpawnAt1, v => { nextSpawnAt1 = v; }],
+        [2, () => nextSpawnAt2, v => { nextSpawnAt2 = v; }],
+      ]) {
+        const hasOne = powerupsOnField.some(p => p.player === player);
+        if (!hasOne && ts >= getTimer() && Math.random() < dt / SPAWN_EXPECTED_MS) {
+          const pu = spawnPowerup(s1, s2, powerupsOnField, player, ts);
+          if (pu) {
+            powerupsOnField.push(pu);
+            setTimer(ts + SPAWN_COOLDOWN_MS);
+          }
         }
+      }
+
+      // Expire uncollected field power-ups
+      const fieldExpired = powerupsOnField.filter(p => ts >= p.fieldExpiresAt);
+      for (const p of fieldExpired) {
+        powerupsOnField = powerupsOnField.filter(fp => fp.uid !== p.uid);
+        // restart the cooldown for that player's slot
+        if (p.player === 1) nextSpawnAt1 = ts + SPAWN_COOLDOWN_MS;
+        else                nextSpawnAt2 = ts + SPAWN_COOLDOWN_MS;
       }
     }
 

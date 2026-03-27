@@ -28,14 +28,15 @@ export const POWERUP_DEFS = {
 
 export const POWERUP_IDS = Object.keys(POWERUP_DEFS);
 
-export const SPAWN_COOLDOWN_MS  = 5_000;   // rest period after each spawn
-export const SPAWN_EXPECTED_MS  = 10_000;  // expected wait after cooldown (geometric)
-export const MAX_ON_FIELD          = 2;
+export const SPAWN_COOLDOWN_MS = 5_000;   // rest period after each spawn (per player)
+export const SPAWN_EXPECTED_MS = 10_000;  // expected wait after cooldown (geometric, per player)
+export const FIELD_EXPIRE_MS   = 10_000;  // uncollected power-up disappears after this
 
 let _uid = 0;
 
-// Returns a new power-up object { uid, type, x, y } or null if no free cell found.
-export function spawnPowerup(s1, s2, existing) {
+// Spawns a power-up in the given player's half (player = 1 or 2).
+// Returns { uid, type, player, x, y, fieldExpiresAt } or null if no free cell.
+export function spawnPowerup(s1, s2, existing, player, now) {
   const blocked = new Set();
 
   // Snake body cells
@@ -51,10 +52,12 @@ export function spawnPowerup(s1, s2, existing) {
   // Existing power-ups on field
   for (const p of existing) blocked.add(`${p.x},${p.y}`);
 
-  // Collect all free cells
+  // Restrict to the player's own half
+  const colMin = player === 1 ? 0       : WALL_R + 1;
+  const colMax = player === 1 ? WALL_L  : COLS;
+
   const free = [];
-  for (let c = 0; c < COLS; c++) {
-    if (c === WALL_L || c === WALL_R) continue;
+  for (let c = colMin; c < colMax; c++) {
     for (let r = 0; r < ROWS; r++) {
       if (!blocked.has(`${c},${r}`)) free.push({ x: c, y: r });
     }
@@ -64,5 +67,5 @@ export function spawnPowerup(s1, s2, existing) {
 
   const cell = free[Math.floor(Math.random() * free.length)];
   const type = POWERUP_IDS[Math.floor(Math.random() * POWERUP_IDS.length)];
-  return { uid: ++_uid, type, x: cell.x, y: cell.y };
+  return { uid: ++_uid, type, player, x: cell.x, y: cell.y, fieldExpiresAt: now + FIELD_EXPIRE_MS };
 }
