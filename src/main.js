@@ -3,6 +3,8 @@ import { registerInput }                                  from './input.js';
 import { createSnakes, createBall,
          stepSnake, snakeHitsDeath, snakesCollide, stepBall,
          getBallTps }                                     from './logic.js';
+import { startBgm, stopBgm, pauseBgm, resumeBgm,
+         sfxBallHit, sfxScore, sfxDeath, sfxWin }        from './audio.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const lenSl  = document.getElementById('len-sl');
@@ -66,12 +68,16 @@ function loop(ts) {
     if (phase === 'playing') {
       ballTickAccum += dt;
       while (ballTickAccum >= ballTickMs) {
+        const prevVx = ball.vx, prevVy = ball.vy;
         const scorer = stepBall(ball, s1, s2);
         ballTickAccum -= ballTickMs;
         if (scorer !== null) {
+          sfxScore();
           awardPoint(scorer);
           ballTickAccum = 0;
           break;
+        } else if (ball.vx !== prevVx || ball.vy !== prevVy) {
+          sfxBallHit();
         }
       }
     }
@@ -87,14 +93,14 @@ function tick() {
 
   const d1 = snakeHitsDeath(s1);
   const d2 = snakeHitsDeath(s2);
-  if (d1 && d2) { endRound(); return; }
-  if (d1)       { awardPoint(2); return; }
-  if (d2)       { awardPoint(1); return; }
+  if (d1 && d2) { sfxDeath(); endRound(); return; }
+  if (d1)       { sfxDeath(); awardPoint(2); return; }
+  if (d2)       { sfxDeath(); awardPoint(1); return; }
 
   const sc = snakesCollide(s1, s2);
-  if (sc === 'both') { endRound(); return; }
-  if (sc === 's1')   { awardPoint(2); return; }
-  if (sc === 's2')   { awardPoint(1); return; }
+  if (sc === 'both') { sfxDeath(); endRound(); return; }
+  if (sc === 's1')   { sfxDeath(); awardPoint(2); return; }
+  if (sc === 's2')   { sfxDeath(); awardPoint(1); return; }
 }
 
 function awardPoint(player) {
@@ -110,6 +116,7 @@ function awardPoint(player) {
 function startGame() {
   score1 = 0; score2 = 0;
   p1Pts.textContent = 0; p2Pts.textContent = 0;
+  startBgm();
   startRound();
 }
 
@@ -132,6 +139,7 @@ function endRound() {
 
 function pause() {
   phase = 'paused';
+  pauseBgm();
   ovTitle.textContent  = 'PAUSED';
   ovMsg.textContent    = 'Press ESC or click Resume to continue.';
   startBtn.textContent = 'RESUME';
@@ -143,10 +151,13 @@ function resume() {
   phase  = 'playing';
   lastTs = performance.now();
   tickAccum = 0;
+  resumeBgm();
 }
 
 function endGame(winner) {
   phase = 'gameover';
+  stopBgm();
+  sfxWin();
   ovTitle.textContent  = `PLAYER ${winner} WINS!`;
   ovMsg.textContent    = `Final score: ${score1} – ${score2}`;
   startBtn.textContent = 'PLAY AGAIN';
