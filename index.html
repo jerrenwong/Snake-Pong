@@ -19,7 +19,7 @@
       user-select: none;
     }
 
-    /* ── Header ── */
+    /* ── Header ─────────────────────────────────────────────── */
     #header {
       display: flex;
       align-items: center;
@@ -35,19 +35,24 @@
     }
 
     #settings-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
       background: transparent;
       border: 1px solid #2a2a2a;
       color: #444;
-      font-size: 1.1rem;
-      line-height: 1;
-      padding: 5px 8px;
+      font-size: 1rem;
       cursor: pointer;
       border-radius: 3px;
       transition: color 0.1s, border-color 0.1s;
+      padding: 0;
+      line-height: 1;
     }
     #settings-btn:hover { color: #0ff; border-color: #0ff; }
 
-    /* ── Scoreboard ── */
+    /* ── Scoreboard ─────────────────────────────────────────── */
     #scoreboard {
       display: flex;
       align-items: center;
@@ -77,15 +82,73 @@
       padding-bottom: 4px;
     }
 
-    /* ── Canvas ── */
+    /* ── Game row: key pad | canvas | key pad ───────────────── */
+    #game-row {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+    }
+
+    /* ── Key pads ───────────────────────────────────────────── */
+    .key-pad {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .key-pad-label {
+      font-size: 0.6rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+    #p1-pad .key-pad-label { color: #1e5a7a; }
+    #p2-pad .key-pad-label { color: #7a3a10; }
+
+    .key-row {
+      display: flex;
+      gap: 5px;
+    }
+
+    .key {
+      width: 38px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      font-size: 1rem;
+      font-weight: bold;
+      border: 2px solid;
+      background: #0d0d0d;
+    }
+
+    .key-blank {
+      visibility: hidden;
+    }
+
+    #p1-pad .key {
+      border-color: #1a4d6a;
+      color: #2af;
+      text-shadow: 0 0 8px #2af6;
+    }
+    #p2-pad .key {
+      border-color: #6a3010;
+      color: #f62;
+      text-shadow: 0 0 8px #f626;
+    }
+
+    /* ── Canvas ─────────────────────────────────────────────── */
     #canvas-wrap {
       position: relative;
       border: 2px solid #222;
+      flex-shrink: 0;
     }
 
     canvas { display: block; }
 
-    /* ── Game overlay (pause / end) ── */
+    /* ── Game overlay (menu / pause / end) ──────────────────── */
     #overlay {
       position: absolute;
       inset: 0;
@@ -94,7 +157,7 @@
       align-items: center;
       justify-content: center;
       background: rgba(0,0,0,0.78);
-      gap: 16px;
+      gap: 18px;
     }
 
     #overlay h2 {
@@ -125,16 +188,7 @@
     }
     #start-btn:hover { background: #0ff; color: #000; }
 
-    /* ── Hint ── */
-    #hint {
-      margin-top: 8px;
-      font-size: 0.72rem;
-      color: #383838;
-      text-align: center;
-      letter-spacing: 0.06em;
-    }
-
-    /* ── Settings modal ── */
+    /* ── Settings modal ─────────────────────────────────────── */
     #settings-modal {
       display: none;
       position: fixed;
@@ -198,7 +252,6 @@
       font-size: 0.95rem;
     }
 
-    /* Snake speed multiplier toggle */
     .mult-group { display: flex; gap: 6px; }
 
     .mult-btn {
@@ -243,29 +296,59 @@
 
 <div id="scoreboard">
   <div class="score-block" id="p1-score">
-    <div class="name">P1 &nbsp;W·A·S·D</div>
+    <div class="name">P1</div>
     <div class="pts" id="p1-pts">0</div>
   </div>
   <div class="score-sep">–</div>
   <div class="score-block" id="p2-score">
-    <div class="name">P2 &nbsp;↑ ← ↓ →</div>
+    <div class="name">P2</div>
     <div class="pts" id="p2-pts">0</div>
   </div>
 </div>
 
-<div id="canvas-wrap">
-  <canvas id="game"></canvas>
-  <div id="overlay">
-    <h2 id="ov-title">SNAKE PONG</h2>
-    <p id="ov-msg">
-      Control your snake to deflect the ball past your opponent.<br>
-      Don't hit the walls or the center divider!
-    </p>
-    <button id="start-btn">START GAME</button>
-  </div>
-</div>
+<div id="game-row">
 
-<div id="hint">P1: W A S D &nbsp;·&nbsp; P2: Arrow Keys &nbsp;·&nbsp; ESC: Pause</div>
+  <!-- P1 key pad (WASD) -->
+  <div class="key-pad" id="p1-pad">
+    <span class="key-pad-label">Player 1</span>
+    <div class="key-row">
+      <div class="key key-blank">A</div>
+      <div class="key">W</div>
+      <div class="key key-blank">D</div>
+    </div>
+    <div class="key-row">
+      <div class="key">A</div>
+      <div class="key">S</div>
+      <div class="key">D</div>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div id="canvas-wrap">
+    <canvas id="game"></canvas>
+    <div id="overlay">
+      <h2 id="ov-title">SNAKE PONG</h2>
+      <p id="ov-msg">Deflect the ball past your opponent.<br>Avoid the walls and the center divider.</p>
+      <button id="start-btn">START GAME</button>
+    </div>
+  </div>
+
+  <!-- P2 key pad (Arrow keys) -->
+  <div class="key-pad" id="p2-pad">
+    <span class="key-pad-label">Player 2</span>
+    <div class="key-row">
+      <div class="key key-blank">←</div>
+      <div class="key">↑</div>
+      <div class="key key-blank">→</div>
+    </div>
+    <div class="key-row">
+      <div class="key">←</div>
+      <div class="key">↓</div>
+      <div class="key">→</div>
+    </div>
+  </div>
+
+</div>
 
 <!-- Settings modal -->
 <div id="settings-modal">

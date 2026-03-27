@@ -1,4 +1,4 @@
-export const CELL   = 20;
+export const CELL   = 26;
 export const COLS   = 36;
 export const ROWS   = 26;
 export const W      = COLS * CELL;
