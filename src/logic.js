@@ -101,12 +101,8 @@ export function stepBall(ball, s1, s2) {
 
 // ── Speed helpers ─────────────────────────────────────────────────────────────
 
-// slider 1–10 → tps 1.5–7
-export function getSnakeTps(sliderValue) {
-  return 1.5 + (sliderValue - 1) * (5.5 / 9);
-}
-
-// slider 1–10 → tps 1–12
+// Ball speed slider 1–10 → tps 1–12
+// Snake tick interval is derived as: ballTickMs / snakeMultiplier (in main.js)
 export function getBallTps(sliderValue) {
   return 1 + (sliderValue - 1) * (11 / 9);
 }

@@ -1,27 +1,28 @@
-import { createRenderer }                                  from './renderer.js';
-import { registerInput }                                    from './input.js';
+import { createRenderer }                                from './renderer.js';
+import { registerInput }                                  from './input.js';
 import { createSnakes, createBall,
          stepSnake, snakeHitsDeath, snakesCollide, stepBall,
-         getSnakeTps, getBallTps }                          from './logic.js';
+         getBallTps }                                     from './logic.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const lenSl  = document.getElementById('len-sl');
 const lenV   = document.getElementById('len-v');
-const spdSl  = document.getElementById('spd-sl');
-const spdV   = document.getElementById('spd-v');
 const bSpdSl = document.getElementById('bspd-sl');
 const bSpdV  = document.getElementById('bspd-v');
 const winSl  = document.getElementById('win-sl');
 const winV   = document.getElementById('win-v');
-const overlay  = document.getElementById('overlay');
-const ovTitle  = document.getElementById('ov-title');
-const ovMsg    = document.getElementById('ov-msg');
-const startBtn = document.getElementById('start-btn');
-const p1Pts    = document.getElementById('p1-pts');
-const p2Pts    = document.getElementById('p2-pts');
+const overlay    = document.getElementById('overlay');
+const ovTitle    = document.getElementById('ov-title');
+const ovMsg      = document.getElementById('ov-msg');
+const startBtn   = document.getElementById('start-btn');
+const p1Pts      = document.getElementById('p1-pts');
+const p2Pts      = document.getElementById('p2-pts');
+const settingsBtn   = document.getElementById('settings-btn');
+const settingsModal = document.getElementById('settings-modal');
+const multGroup     = document.getElementById('mult-group');
 
+// Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
-spdSl.addEventListener('input',  () => spdV.textContent  = spdSl.value);
 bSpdSl.addEventListener('input', () => bSpdV.textContent = bSpdSl.value);
 winSl.addEventListener('input',  () => winV.textContent  = winSl.value);
 
@@ -32,6 +33,7 @@ const { draw } = createRenderer(document.getElementById('game'));
 let phase  = 'menu'; // menu | playing | paused | roundend | gameover
 let score1 = 0, score2 = 0;
 let s1 = null, s2 = null, ball = null;
+let snakeMultiplier = 1; // snake moves N× per ball tick (1, 2, or 3)
 
 // ── RAF loop ──────────────────────────────────────────────────────────────────
 let rafId = null, lastTs = 0;
@@ -52,7 +54,7 @@ function loop(ts) {
   lastTs = ts;
 
   if (phase === 'playing') {
-    // Snake ticks
+    // Snake ticks (N× per ball tick)
     tickAccum += dt;
     while (tickAccum >= tickMs) {
       tick();
@@ -60,7 +62,7 @@ function loop(ts) {
       if (phase !== 'playing') { tickAccum = 0; ballTickAccum = 0; break; }
     }
 
-    // Ball ticks — independent rate
+    // Ball ticks — base rate
     if (phase === 'playing') {
       ballTickAccum += dt;
       while (ballTickAccum >= ballTickMs) {
@@ -112,8 +114,9 @@ function startGame() {
 }
 
 function startRound() {
-  tickMs     = 1000 / getSnakeTps(parseInt(spdSl.value));
+  // Ball is the base rate; snake ticks snakeMultiplier times per ball tick.
   ballTickMs = 1000 / getBallTps(parseInt(bSpdSl.value));
+  tickMs     = ballTickMs / snakeMultiplier;
   const { s1: ns1, s2: ns2 } = createSnakes(parseInt(lenSl.value));
   s1 = ns1; s2 = ns2;
   ball = createBall();
@@ -150,15 +153,38 @@ function endGame(winner) {
   overlay.style.display = 'flex';
 }
 
+// ── Settings modal ────────────────────────────────────────────────────────────
+settingsBtn.addEventListener('click', () => settingsModal.classList.add('open'));
+
+document.getElementById('close-settings').addEventListener('click', () => {
+  settingsModal.classList.remove('open');
+});
+
+// Close on backdrop click
+settingsModal.addEventListener('click', e => {
+  if (e.target === settingsModal) settingsModal.classList.remove('open');
+});
+
+// Snake multiplier toggle
+multGroup.addEventListener('click', e => {
+  const btn = e.target.closest('.mult-btn');
+  if (!btn) return;
+  snakeMultiplier = parseInt(btn.dataset.mult);
+  multGroup.querySelectorAll('.mult-btn').forEach(b => b.classList.toggle('active', b === btn));
+});
+
 // ── Input ─────────────────────────────────────────────────────────────────────
 registerInput({
   onEscape() {
+    if (settingsModal.classList.contains('open')) {
+      settingsModal.classList.remove('open');
+      return;
+    }
     if (phase === 'playing') pause();
     else if (phase === 'paused') resume();
   },
   onDirectionP1(dx, dy) {
     if (phase !== 'playing' || !s1) return;
-    // Prevent 180° — compare against actual current direction
     if (dx !== 0 && s1.dir.x === -dx) return;
     if (dy !== 0 && s1.dir.y === -dy) return;
     s1.nextDir = { x: dx, y: dy };

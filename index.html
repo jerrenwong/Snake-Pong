@@ -19,57 +19,35 @@
       user-select: none;
     }
 
+    /* ── Header ── */
+    #header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
     h1 {
       font-size: 2rem;
       letter-spacing: 0.18em;
-      margin-bottom: 14px;
       color: #fff;
       text-shadow: 0 0 24px #0ff3;
     }
 
-    #config-panel {
-      display: flex;
-      gap: 28px;
-      align-items: center;
-      margin-bottom: 12px;
-      flex-wrap: wrap;
-      justify-content: center;
-    }
-
-    .cfg-item {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 4px;
-    }
-
-    .cfg-item .cfg-label {
-      font-size: 0.72rem;
-      color: #666;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .cfg-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    input[type=range] {
-      width: 100px;
-      accent-color: #0ff;
+    #settings-btn {
+      background: transparent;
+      border: 1px solid #2a2a2a;
+      color: #444;
+      font-size: 1.1rem;
+      line-height: 1;
+      padding: 5px 8px;
       cursor: pointer;
+      border-radius: 3px;
+      transition: color 0.1s, border-color 0.1s;
     }
+    #settings-btn:hover { color: #0ff; border-color: #0ff; }
 
-    .cfg-val {
-      color: #0ff;
-      font-weight: bold;
-      min-width: 22px;
-      text-align: center;
-      font-size: 0.95rem;
-    }
-
+    /* ── Scoreboard ── */
     #scoreboard {
       display: flex;
       align-items: center;
@@ -99,6 +77,7 @@
       padding-bottom: 4px;
     }
 
+    /* ── Canvas ── */
     #canvas-wrap {
       position: relative;
       border: 2px solid #222;
@@ -106,6 +85,7 @@
 
     canvas { display: block; }
 
+    /* ── Game overlay (pause / end) ── */
     #overlay {
       position: absolute;
       inset: 0;
@@ -145,6 +125,7 @@
     }
     #start-btn:hover { background: #0ff; color: #000; }
 
+    /* ── Hint ── */
     #hint {
       margin-top: 8px;
       font-size: 0.72rem;
@@ -152,41 +133,112 @@
       text-align: center;
       letter-spacing: 0.06em;
     }
+
+    /* ── Settings modal ── */
+    #settings-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.72);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+    }
+    #settings-modal.open { display: flex; }
+
+    #settings-panel {
+      background: #111;
+      border: 1px solid #2a2a2a;
+      padding: 28px 32px;
+      min-width: 280px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+
+    #settings-panel h3 {
+      font-size: 0.8rem;
+      letter-spacing: 0.2em;
+      color: #444;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .cfg-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .cfg-label {
+      font-size: 0.68rem;
+      color: #555;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .cfg-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    input[type=range] {
+      width: 110px;
+      accent-color: #0ff;
+      cursor: pointer;
+    }
+
+    .cfg-val {
+      color: #0ff;
+      font-weight: bold;
+      min-width: 22px;
+      text-align: center;
+      font-size: 0.95rem;
+    }
+
+    /* Snake speed multiplier toggle */
+    .mult-group { display: flex; gap: 6px; }
+
+    .mult-btn {
+      background: transparent;
+      border: 1px solid #2a2a2a;
+      color: #444;
+      font-family: inherit;
+      font-size: 0.85rem;
+      letter-spacing: 0.06em;
+      padding: 5px 14px;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+    .mult-btn:hover { border-color: #0ff; color: #0ff; }
+    .mult-btn.active {
+      border-color: #0ff;
+      color: #0ff;
+      background: rgba(0,255,255,0.07);
+    }
+
+    #close-settings {
+      align-self: center;
+      background: transparent;
+      border: 1px solid #333;
+      color: #555;
+      font-family: inherit;
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+      padding: 7px 24px;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+    #close-settings:hover { border-color: #fff; color: #fff; }
   </style>
 </head>
 <body>
 
-<h1>SNAKE PONG</h1>
-
-<div id="config-panel">
-  <div class="cfg-item">
-    <span class="cfg-label">Snake Length</span>
-    <div class="cfg-row">
-      <input type="range" id="len-sl" min="3" max="20" value="6" />
-      <span class="cfg-val" id="len-v">6</span>
-    </div>
-  </div>
-  <div class="cfg-item">
-    <span class="cfg-label">Snake Speed</span>
-    <div class="cfg-row">
-      <input type="range" id="spd-sl" min="1" max="10" value="3" />
-      <span class="cfg-val" id="spd-v">3</span>
-    </div>
-  </div>
-  <div class="cfg-item">
-    <span class="cfg-label">Ball Speed</span>
-    <div class="cfg-row">
-      <input type="range" id="bspd-sl" min="1" max="10" value="4" />
-      <span class="cfg-val" id="bspd-v">4</span>
-    </div>
-  </div>
-  <div class="cfg-item">
-    <span class="cfg-label">Win Score</span>
-    <div class="cfg-row">
-      <input type="range" id="win-sl" min="1" max="20" value="7" />
-      <span class="cfg-val" id="win-v">7</span>
-    </div>
-  </div>
+<div id="header">
+  <h1>SNAKE PONG</h1>
+  <button id="settings-btn" title="Settings">⚙</button>
 </div>
 
 <div id="scoreboard">
@@ -214,6 +266,48 @@
 </div>
 
 <div id="hint">P1: W A S D &nbsp;·&nbsp; P2: Arrow Keys &nbsp;·&nbsp; ESC: Pause</div>
+
+<!-- Settings modal -->
+<div id="settings-modal">
+  <div id="settings-panel">
+    <h3>Settings</h3>
+
+    <div class="cfg-item">
+      <span class="cfg-label">Snake Length</span>
+      <div class="cfg-row">
+        <input type="range" id="len-sl" min="3" max="20" value="6" />
+        <span class="cfg-val" id="len-v">6</span>
+      </div>
+    </div>
+
+    <div class="cfg-item">
+      <span class="cfg-label">Ball Speed</span>
+      <div class="cfg-row">
+        <input type="range" id="bspd-sl" min="1" max="10" value="4" />
+        <span class="cfg-val" id="bspd-v">4</span>
+      </div>
+    </div>
+
+    <div class="cfg-item">
+      <span class="cfg-label">Snake Speed</span>
+      <div class="mult-group" id="mult-group">
+        <button class="mult-btn active" data-mult="1">1×</button>
+        <button class="mult-btn"        data-mult="2">2×</button>
+        <button class="mult-btn"        data-mult="3">3×</button>
+      </div>
+    </div>
+
+    <div class="cfg-item">
+      <span class="cfg-label">Win Score</span>
+      <div class="cfg-row">
+        <input type="range" id="win-sl" min="1" max="20" value="7" />
+        <span class="cfg-val" id="win-v">7</span>
+      </div>
+    </div>
+
+    <button id="close-settings">CLOSE</button>
+  </div>
+</div>
 
 <script type="module" src="src/main.js"></script>
 </body>
