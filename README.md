@@ -57,6 +57,10 @@ A timer bar at the top corner of the canvas shows the remaining duration for eac
 - The center divider is lethal to snakes; the ball passes through it freely.
 - Power-up effects expire when the timer runs out; snake length returns to pre-boost size on expiry.
 
+## Credits
+
+Thanks to **Mehmet Can Bastemir** for suggestions for improvement.
+
 ## Project Structure
 
 ```
