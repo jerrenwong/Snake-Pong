@@ -166,6 +166,14 @@ export function sfxDeath() {
   tone(110, t + 0.18, 0.22, 'sawtooth', 0.22);
 }
 
+// 3-note ascending chime on power-up collect
+export function sfxPowerup() {
+  const t = getCtx().currentTime;
+  tone(hz('G5'), t,        0.07, 'square', 0.18);
+  tone(hz('B5'), t + 0.07, 0.07, 'square', 0.18);
+  tone(hz('E6'), t + 0.14, 0.14, 'square', 0.18);
+}
+
 // Rising 4-note fanfare on game win
 export function sfxWin() {
   const t = getCtx().currentTime;

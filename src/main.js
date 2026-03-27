@@ -4,7 +4,12 @@ import { createSnakes, createBall,
          stepSnake, snakeHitsDeath, snakesCollide, stepBall,
          getBallTps }                                     from './logic.js';
 import { startBgm, stopBgm, pauseBgm, resumeBgm,
-         sfxBallHit, sfxScore, sfxDeath, sfxWin }        from './audio.js';
+         sfxBallHit, sfxScore, sfxDeath, sfxWin,
+         sfxPowerup }                                     from './audio.js';
+import { POWERUP_DEFS, spawnPowerup,
+         SPAWN_COOLDOWN_MS, SPAWN_EXPECTED_MS,
+         MAX_ON_FIELD }                                   from './powerups.js';
+import { WALL_L, WALL_R }                                 from './constants.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const lenSl  = document.getElementById('len-sl');
@@ -22,6 +27,8 @@ const p2Pts      = document.getElementById('p2-pts');
 const settingsBtn   = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const multGroup     = document.getElementById('mult-group');
+const puToggle      = document.getElementById('pu-toggle');
+const puLegend      = document.getElementById('powerup-legend');
 
 // Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
@@ -36,6 +43,87 @@ let phase  = 'menu'; // menu | playing | paused | roundend | gameover
 let score1 = 0, score2 = 0;
 let s1 = null, s2 = null, ball = null;
 let snakeMultiplier = 1; // snake moves N× per ball tick (1, 2, or 3)
+
+// ── Power-up state ────────────────────────────────────────────────────────────
+let powerupsEnabled      = false;
+let powerupsOnField      = [];   // [{ uid, type, x, y }]
+let activeEffects        = [];   // [{ uid, type, player, expiresAt, totalDuration }]
+let ballSpeedBoostPlayer = null; // 1 | 2 | null
+let nextSpawnAt          = 0;    // performance.now() timestamp
+let _effectUid           = 0;
+
+function resetPowerupState() {
+  powerupsOnField      = [];
+  activeEffects        = [];
+  ballSpeedBoostPlayer = null;
+  nextSpawnAt          = performance.now() + SPAWN_COOLDOWN_MS;
+}
+
+function applyEffect(type, player) {
+  const def = POWERUP_DEFS[type];
+
+  // If this effect type is already active for this player, extend it
+  const existing = activeEffects.find(e => e.type === type && e.player === player);
+  if (existing) {
+    existing.expiresAt = performance.now() + def.duration;
+    return;
+  }
+
+  const uid = ++_effectUid;
+  activeEffects.push({ uid, type, player, expiresAt: performance.now() + def.duration, totalDuration: def.duration });
+
+  const snake = player === 1 ? s1 : s2;
+  switch (type) {
+    case 'length_boost':
+      // Grow 5 cells by appending tail duplicates
+      for (let i = 0; i < 5; i++) snake.body.push({ ...snake.body[snake.body.length - 1] });
+      break;
+    case 'snake_speed':
+      snake.speedMult = 2;
+      break;
+    case 'ball_speed':
+      ballSpeedBoostPlayer = player;
+      break;
+  }
+}
+
+function removeEffect(eff) {
+  activeEffects = activeEffects.filter(e => e.uid !== eff.uid);
+  const snake = eff.player === 1 ? s1 : s2;
+  switch (eff.type) {
+    case 'length_boost':
+      // Trim 5 cells from tail (clamped to min 3)
+      snake.body.splice(Math.max(3, snake.body.length - 5));
+      break;
+    case 'snake_speed':
+      snake.speedMult = 1;
+      break;
+    case 'ball_speed':
+      if (ballSpeedBoostPlayer === eff.player) ballSpeedBoostPlayer = null;
+      break;
+  }
+}
+
+function collectPowerup(pu, player) {
+  powerupsOnField = powerupsOnField.filter(p => p.uid !== pu.uid);
+  sfxPowerup();
+  applyEffect(pu.type, player);
+}
+
+// ── Legend builder ────────────────────────────────────────────────────────────
+function buildLegend() {
+  puLegend.innerHTML = '';
+  if (!powerupsEnabled) { puLegend.style.display = 'none'; return; }
+  puLegend.style.display = 'flex';
+  for (const [id, def] of Object.entries(POWERUP_DEFS)) {
+    const item = document.createElement('div');
+    item.className = 'pu-legend-item';
+    item.innerHTML =
+      `<span class="pu-badge" style="background:${def.color};color:#000">${def.label}</span>` +
+      `<span class="pu-desc">${def.description}</span>`;
+    puLegend.appendChild(item);
+  }
+}
 
 // ── RAF loop ──────────────────────────────────────────────────────────────────
 let rafId = null, lastTs = 0;
@@ -56,7 +144,24 @@ function loop(ts) {
   lastTs = ts;
 
   if (phase === 'playing') {
-    // Snake ticks (N× per ball tick)
+    // Power-up spawn: 5s cooldown after each spawn, then geometric (E[wait]=10s)
+    if (powerupsEnabled && ts >= nextSpawnAt && powerupsOnField.length < MAX_ON_FIELD) {
+      if (Math.random() < dt / SPAWN_EXPECTED_MS) {
+        const pu = spawnPowerup(s1, s2, powerupsOnField);
+        if (pu) {
+          powerupsOnField.push(pu);
+          nextSpawnAt = ts + SPAWN_COOLDOWN_MS;
+        }
+      }
+    }
+
+    // Effect expiry
+    if (powerupsEnabled) {
+      const expired = activeEffects.filter(e => ts >= e.expiresAt);
+      for (const e of expired) removeEffect(e);
+    }
+
+    // Snake ticks (N× per ball tick, N = snakeMultiplier × speedMult)
     tickAccum += dt;
     while (tickAccum >= tickMs) {
       tick();
@@ -64,13 +169,20 @@ function loop(ts) {
       if (phase !== 'playing') { tickAccum = 0; ballTickAccum = 0; break; }
     }
 
-    // Ball ticks — base rate
+    // Ball ticks — base rate, halved if ball-speed boost is active in correct half
     if (phase === 'playing') {
       ballTickAccum += dt;
-      while (ballTickAccum >= ballTickMs) {
+      let effMs = ballTickMs;
+      if (powerupsEnabled && ballSpeedBoostPlayer !== null) {
+        const inOpponentHalf =
+          (ballSpeedBoostPlayer === 1 && ball.x >= WALL_R) ||
+          (ballSpeedBoostPlayer === 2 && ball.x <  WALL_L);
+        if (inOpponentHalf) effMs = ballTickMs / 2;
+      }
+      while (ballTickAccum >= effMs) {
         const prevVx = ball.vx, prevVy = ball.vy;
         const scorer = stepBall(ball, s1, s2);
-        ballTickAccum -= ballTickMs;
+        ballTickAccum -= effMs;
         if (scorer !== null) {
           sfxScore();
           awardPoint(scorer);
@@ -83,13 +195,25 @@ function loop(ts) {
     }
   }
 
-  draw(s1, s2, ball);
+  draw(s1, s2, ball,
+    powerupsEnabled ? powerupsOnField : [],
+    powerupsEnabled ? activeEffects   : []);
 }
 
 // ── Game logic ────────────────────────────────────────────────────────────────
 function tick() {
-  stepSnake(s1);
-  stepSnake(s2);
+  // Step each snake (speedMult times)
+  for (let i = 0; i < (s1.speedMult || 1); i++) stepSnake(s1);
+  for (let i = 0; i < (s2.speedMult || 1); i++) stepSnake(s2);
+
+  // Check power-up collection
+  if (powerupsEnabled) {
+    for (const pu of [...powerupsOnField]) {
+      const h1 = s1.body[0], h2 = s2.body[0];
+      if (h1.x === pu.x && h1.y === pu.y) { collectPowerup(pu, 1); continue; }
+      if (h2.x === pu.x && h2.y === pu.y) { collectPowerup(pu, 2); }
+    }
+  }
 
   const d1 = snakeHitsDeath(s1);
   const d2 = snakeHitsDeath(s2);
@@ -125,8 +249,10 @@ function startRound() {
   ballTickMs = 1000 / getBallTps(parseInt(bSpdSl.value));
   tickMs     = ballTickMs / snakeMultiplier;
   const { s1: ns1, s2: ns2 } = createSnakes(parseInt(lenSl.value));
-  s1 = ns1; s2 = ns2;
+  s1 = ns1; s1.speedMult = 1;
+  s2 = ns2; s2.speedMult = 1;
   ball = createBall();
+  if (powerupsEnabled) resetPowerupState();
   overlay.style.display = 'none';
   phase = 'playing';
   startLoop();
@@ -184,6 +310,14 @@ multGroup.addEventListener('click', e => {
   multGroup.querySelectorAll('.mult-btn').forEach(b => b.classList.toggle('active', b === btn));
 });
 
+// Power-up toggle
+puToggle.addEventListener('click', () => {
+  powerupsEnabled = !powerupsEnabled;
+  puToggle.classList.toggle('active', powerupsEnabled);
+  puToggle.textContent = powerupsEnabled ? 'ON' : 'OFF';
+  buildLegend();
+});
+
 // ── Input ─────────────────────────────────────────────────────────────────────
 registerInput({
   onEscape() {
@@ -215,4 +349,5 @@ startBtn.addEventListener('click', () => {
 });
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
+buildLegend();
 startLoop();
