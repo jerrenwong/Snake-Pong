@@ -157,6 +157,12 @@
       align-items: center;
       justify-content: center;
       background: rgba(0,0,0,0.78);
+    }
+
+    #main-menu {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
       gap: 18px;
     }
 
@@ -187,6 +193,111 @@
       transition: background 0.12s, color 0.12s;
     }
     #start-btn:hover { background: #0ff; color: #000; }
+
+    /* ── Online panel ────────────────────────────────────────── */
+    #online-btn {
+      background: transparent;
+      border: 1px solid #2a2a2a;
+      color: #555;
+      padding: 8px 28px;
+      font-family: inherit;
+      font-size: 0.85rem;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      transition: border-color 0.12s, color 0.12s;
+    }
+    #online-btn:hover { border-color: #0ff; color: #0ff; }
+
+    #online-panel {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      min-width: 240px;
+    }
+
+    #online-panel h3 {
+      font-size: 0.8rem;
+      letter-spacing: 0.2em;
+      color: #444;
+      text-transform: uppercase;
+    }
+
+    #online-status {
+      font-size: 0.78rem;
+      color: #666;
+      text-align: center;
+      min-height: 1em;
+    }
+
+    #room-code-wrap {
+      font-size: 0.72rem;
+      color: #555;
+      letter-spacing: 0.08em;
+    }
+
+    #room-code {
+      color: #0ff;
+      font-size: 1.5rem;
+      font-weight: bold;
+      letter-spacing: 0.22em;
+      display: block;
+      text-align: center;
+      margin-top: 2px;
+    }
+
+    .online-sep {
+      color: #333;
+      font-size: 0.75rem;
+      letter-spacing: 0.12em;
+    }
+
+    .online-join-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    #join-code {
+      background: #0d0d0d;
+      border: 1px solid #2a2a2a;
+      color: #eee;
+      font-family: inherit;
+      font-size: 0.95rem;
+      letter-spacing: 0.18em;
+      padding: 7px 12px;
+      width: 120px;
+      text-transform: uppercase;
+      outline: none;
+      transition: border-color 0.1s;
+    }
+    #join-code:focus { border-color: #0ff; }
+
+    #host-btn, #join-btn {
+      background: transparent;
+      border: 1px solid #2a2a2a;
+      color: #555;
+      font-family: inherit;
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+      padding: 7px 16px;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+    #host-btn:hover, #join-btn:hover { border-color: #0ff; color: #0ff; }
+    #host-btn:disabled, #join-btn:disabled { opacity: 0.35; cursor: default; }
+
+    #online-back {
+      background: transparent;
+      border: none;
+      color: #333;
+      font-family: inherit;
+      font-size: 0.75rem;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      transition: color 0.1s;
+      padding: 4px 0;
+    }
+    #online-back:hover { color: #888; }
 
     /* ── Settings modal ─────────────────────────────────────── */
     #settings-modal {
@@ -376,9 +487,36 @@
   <div id="canvas-wrap">
     <canvas id="game"></canvas>
     <div id="overlay">
-      <h2 id="ov-title">SNAKE PONG</h2>
-      <p id="ov-msg">Deflect the ball past your opponent.<br>Avoid the walls and the center divider.</p>
-      <button id="start-btn">START GAME</button>
+
+      <!-- Main menu (start / pause / gameover) -->
+      <div id="main-menu">
+        <h2 id="ov-title">SNAKE PONG</h2>
+        <p id="ov-msg">Deflect the ball past your opponent.<br>Avoid the walls and the center divider.</p>
+        <button id="start-btn">START GAME</button>
+        <button id="online-btn">PLAY ONLINE</button>
+      </div>
+
+      <!-- Online mode panel -->
+      <div id="online-panel">
+        <h3>Online Multiplayer</h3>
+        <p id="online-status"></p>
+
+        <button id="host-btn">HOST GAME</button>
+        <div id="room-code-wrap">
+          Room code
+          <span id="room-code"></span>
+        </div>
+
+        <div class="online-sep">— OR —</div>
+
+        <div class="online-join-row">
+          <input id="join-code" placeholder="XXXXX" maxlength="5" autocomplete="off" spellcheck="false" />
+          <button id="join-btn">JOIN</button>
+        </div>
+
+        <button id="online-back">← BACK</button>
+      </div>
+
     </div>
   </div>
 

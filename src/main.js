@@ -10,6 +10,7 @@ import { POWERUP_DEFS, spawnPowerup,
          SPAWN_COOLDOWN_MS, SPAWN_EXPECTED_MS,
          FIELD_EXPIRE_MS }                                from './powerups.js';
 import { WALL_L, WALL_R }                                 from './constants.js';
+import { createNetwork }                                  from './network.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const lenSl  = document.getElementById('len-sl');
@@ -30,6 +31,17 @@ const multGroup     = document.getElementById('mult-group');
 const puToggle      = document.getElementById('pu-toggle');
 const puLegend      = document.getElementById('powerup-legend');
 
+// Online UI refs
+const mainMenu     = document.getElementById('main-menu');
+const onlinePanel  = document.getElementById('online-panel');
+const onlineBtn    = document.getElementById('online-btn');
+const onlineBack   = document.getElementById('online-back');
+const onlineStatus = document.getElementById('online-status');
+const hostBtn      = document.getElementById('host-btn');
+const roomCodeEl   = document.getElementById('room-code');
+const joinCodeEl   = document.getElementById('join-code');
+const joinBtn      = document.getElementById('join-btn');
+
 // Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
 bSpdSl.addEventListener('input', () => bSpdV.textContent = bSpdSl.value);
@@ -42,91 +54,23 @@ const { draw } = createRenderer(document.getElementById('game'));
 let phase  = 'menu'; // menu | playing | paused | roundend | gameover
 let score1 = 0, score2 = 0;
 let s1 = null, s2 = null, ball = null;
-let snakeMultiplier = 1; // snake moves N× per ball tick (1, 2, or 3)
+let snakeMultiplier = 1;
 
 // ── Power-up state ────────────────────────────────────────────────────────────
 let powerupsEnabled      = false;
-let powerupsOnField      = [];   // [{ uid, type, player, x, y, fieldExpiresAt }]
-let activeEffects        = [];   // [{ uid, type, player, expiresAt, totalDuration }]
-let ballSpeedBoostPlayer = null; // 1 | 2 | null
-let nextSpawnAt1         = 0;    // per-player spawn timers
+let powerupsOnField      = [];
+let activeEffects        = [];
+let ballSpeedBoostPlayer = null;
+let nextSpawnAt1         = 0;
 let nextSpawnAt2         = 0;
 let _effectUid           = 0;
 
-function resetPowerupState() {
-  powerupsOnField      = [];
-  activeEffects        = [];
-  ballSpeedBoostPlayer = null;
-  const now = performance.now();
-  nextSpawnAt1 = now + SPAWN_COOLDOWN_MS;
-  nextSpawnAt2 = now + SPAWN_COOLDOWN_MS;
-}
+// ── Online state ──────────────────────────────────────────────────────────────
+let onlineRole = null;  // null | 'host' | 'guest'
+let net        = null;
+let pendingSfx = [];    // SFX events bundled into next state send
 
-function applyEffect(type, player) {
-  const def = POWERUP_DEFS[type];
-
-  // If this effect type is already active for this player, extend it
-  const existing = activeEffects.find(e => e.type === type && e.player === player);
-  if (existing) {
-    existing.expiresAt = performance.now() + def.duration;
-    return;
-  }
-
-  const uid = ++_effectUid;
-  activeEffects.push({ uid, type, player, expiresAt: performance.now() + def.duration, totalDuration: def.duration });
-
-  const snake = player === 1 ? s1 : s2;
-  switch (type) {
-    case 'length_boost':
-      // Grow 5 cells by appending tail duplicates
-      for (let i = 0; i < 5; i++) snake.body.push({ ...snake.body[snake.body.length - 1] });
-      break;
-    case 'snake_speed':
-      snake.speedMult = 2;
-      break;
-    case 'ball_speed':
-      ballSpeedBoostPlayer = player;
-      break;
-  }
-}
-
-function removeEffect(eff) {
-  activeEffects = activeEffects.filter(e => e.uid !== eff.uid);
-  const snake = eff.player === 1 ? s1 : s2;
-  switch (eff.type) {
-    case 'length_boost':
-      // Trim 5 cells from tail (clamped to min 3)
-      snake.body.splice(Math.max(3, snake.body.length - 5));
-      break;
-    case 'snake_speed':
-      snake.speedMult = 1;
-      break;
-    case 'ball_speed':
-      if (ballSpeedBoostPlayer === eff.player) ballSpeedBoostPlayer = null;
-      break;
-  }
-}
-
-function collectPowerup(pu, player) {
-  powerupsOnField = powerupsOnField.filter(p => p.uid !== pu.uid);
-  sfxPowerup();
-  applyEffect(pu.type, player);
-}
-
-// ── Legend builder ────────────────────────────────────────────────────────────
-function buildLegend() {
-  puLegend.innerHTML = '';
-  if (!powerupsEnabled) { puLegend.style.display = 'none'; return; }
-  puLegend.style.display = 'flex';
-  for (const [id, def] of Object.entries(POWERUP_DEFS)) {
-    const item = document.createElement('div');
-    item.className = 'pu-legend-item';
-    item.innerHTML =
-      `<span class="pu-badge" style="background:${def.color};color:#000">${def.label}</span>` +
-      `<span class="pu-desc">${def.description}</span>`;
-    puLegend.appendChild(item);
-  }
-}
+const WS_URL = `ws://${window.location.host}`;
 
 // ── RAF loop ──────────────────────────────────────────────────────────────────
 let rafId = null, lastTs = 0;
@@ -143,11 +87,22 @@ function startLoop() {
 
 function loop(ts) {
   rafId = requestAnimationFrame(loop);
+
+  // ── Guest: just render latest received state ──────────────────────────────
+  if (onlineRole === 'guest') {
+    if (s1 && s2 && ball) {
+      draw(s1, s2, ball,
+        powerupsEnabled ? powerupsOnField : [],
+        powerupsEnabled ? activeEffects   : []);
+    }
+    return;
+  }
+
   const dt = Math.min(ts - lastTs, 150);
   lastTs = ts;
 
   if (phase === 'playing') {
-    // Power-up spawn: per-player, max 1 on field each, 5s cooldown + geometric E[wait]=10s
+    // Power-up spawn (per-player, max 1 each, 5s cooldown + geometric E[wait]=10s)
     if (powerupsEnabled) {
       for (const [player, getTimer, setTimer] of [
         [1, () => nextSpawnAt1, v => { nextSpawnAt1 = v; }],
@@ -167,7 +122,6 @@ function loop(ts) {
       const fieldExpired = powerupsOnField.filter(p => ts >= p.fieldExpiresAt);
       for (const p of fieldExpired) {
         powerupsOnField = powerupsOnField.filter(fp => fp.uid !== p.uid);
-        // restart the cooldown for that player's slot
         if (p.player === 1) nextSpawnAt1 = ts + SPAWN_COOLDOWN_MS;
         else                nextSpawnAt2 = ts + SPAWN_COOLDOWN_MS;
       }
@@ -179,7 +133,7 @@ function loop(ts) {
       for (const e of expired) removeEffect(e);
     }
 
-    // Snake ticks (N× per ball tick, N = snakeMultiplier × speedMult)
+    // Snake ticks (snakeMultiplier × speedMult per ball tick)
     tickAccum += dt;
     while (tickAccum >= tickMs) {
       tick();
@@ -187,7 +141,7 @@ function loop(ts) {
       if (phase !== 'playing') { tickAccum = 0; ballTickAccum = 0; break; }
     }
 
-    // Ball ticks — base rate, halved if ball-speed boost is active in correct half
+    // Ball ticks
     if (phase === 'playing') {
       ballTickAccum += dt;
       let effMs = ballTickMs;
@@ -203,11 +157,13 @@ function loop(ts) {
         ballTickAccum -= effMs;
         if (scorer !== null) {
           sfxScore();
+          pendingSfx.push('score');
           awardPoint(scorer);
           ballTickAccum = 0;
           break;
         } else if (ball.vx !== prevVx || ball.vy !== prevVy) {
           sfxBallHit();
+          pendingSfx.push('ballHit');
         }
       }
     }
@@ -216,15 +172,16 @@ function loop(ts) {
   draw(s1, s2, ball,
     powerupsEnabled ? powerupsOnField : [],
     powerupsEnabled ? activeEffects   : []);
+
+  // Send state snapshot to guest each frame when playing online as host
+  if (onlineRole === 'host' && phase === 'playing') sendState();
 }
 
 // ── Game logic ────────────────────────────────────────────────────────────────
 function tick() {
-  // Step each snake (speedMult times)
   for (let i = 0; i < (s1.speedMult || 1); i++) stepSnake(s1);
   for (let i = 0; i < (s2.speedMult || 1); i++) stepSnake(s2);
 
-  // Check power-up collection
   if (powerupsEnabled) {
     for (const pu of [...powerupsOnField]) {
       const h1 = s1.body[0], h2 = s2.body[0];
@@ -235,14 +192,14 @@ function tick() {
 
   const d1 = snakeHitsDeath(s1);
   const d2 = snakeHitsDeath(s2);
-  if (d1 && d2) { sfxDeath(); endRound(); return; }
-  if (d1)       { sfxDeath(); awardPoint(2); return; }
-  if (d2)       { sfxDeath(); awardPoint(1); return; }
+  if (d1 && d2) { sfxDeath(); pendingSfx.push('death'); endRound(); return; }
+  if (d1)       { sfxDeath(); pendingSfx.push('death'); awardPoint(2); return; }
+  if (d2)       { sfxDeath(); pendingSfx.push('death'); awardPoint(1); return; }
 
   const sc = snakesCollide(s1, s2);
-  if (sc === 'both') { sfxDeath(); endRound(); return; }
-  if (sc === 's1')   { sfxDeath(); awardPoint(2); return; }
-  if (sc === 's2')   { sfxDeath(); awardPoint(1); return; }
+  if (sc === 'both') { sfxDeath(); pendingSfx.push('death'); endRound(); return; }
+  if (sc === 's1')   { sfxDeath(); pendingSfx.push('death'); awardPoint(2); return; }
+  if (sc === 's2')   { sfxDeath(); pendingSfx.push('death'); awardPoint(1); return; }
 }
 
 function awardPoint(player) {
@@ -254,6 +211,68 @@ function awardPoint(player) {
   else endRound();
 }
 
+// ── Power-up logic ────────────────────────────────────────────────────────────
+function resetPowerupState() {
+  powerupsOnField      = [];
+  activeEffects        = [];
+  ballSpeedBoostPlayer = null;
+  const now = performance.now();
+  nextSpawnAt1 = now + SPAWN_COOLDOWN_MS;
+  nextSpawnAt2 = now + SPAWN_COOLDOWN_MS;
+}
+
+function applyEffect(type, player) {
+  const def = POWERUP_DEFS[type];
+  const existing = activeEffects.find(e => e.type === type && e.player === player);
+  if (existing) { existing.expiresAt = performance.now() + def.duration; return; }
+  const uid = ++_effectUid;
+  activeEffects.push({ uid, type, player, expiresAt: performance.now() + def.duration, totalDuration: def.duration });
+  const snake = player === 1 ? s1 : s2;
+  switch (type) {
+    case 'length_boost':
+      for (let i = 0; i < 5; i++) snake.body.push({ ...snake.body[snake.body.length - 1] });
+      break;
+    case 'snake_speed': snake.speedMult = 2; break;
+    case 'ball_speed':  ballSpeedBoostPlayer = player; break;
+  }
+}
+
+function removeEffect(eff) {
+  activeEffects = activeEffects.filter(e => e.uid !== eff.uid);
+  const snake = eff.player === 1 ? s1 : s2;
+  switch (eff.type) {
+    case 'length_boost':
+      snake.body.splice(Math.max(3, snake.body.length - 5));
+      break;
+    case 'snake_speed': snake.speedMult = 1; break;
+    case 'ball_speed':
+      if (ballSpeedBoostPlayer === eff.player) ballSpeedBoostPlayer = null;
+      break;
+  }
+}
+
+function collectPowerup(pu, player) {
+  powerupsOnField = powerupsOnField.filter(p => p.uid !== pu.uid);
+  sfxPowerup();
+  pendingSfx.push('powerup');
+  applyEffect(pu.type, player);
+}
+
+// ── Legend ────────────────────────────────────────────────────────────────────
+function buildLegend() {
+  puLegend.innerHTML = '';
+  if (!powerupsEnabled) { puLegend.style.display = 'none'; return; }
+  puLegend.style.display = 'flex';
+  for (const [, def] of Object.entries(POWERUP_DEFS)) {
+    const item = document.createElement('div');
+    item.className = 'pu-legend-item';
+    item.innerHTML =
+      `<span class="pu-badge" style="background:${def.color};color:#000">${def.label}</span>` +
+      `<span class="pu-desc">${def.description}</span>`;
+    puLegend.appendChild(item);
+  }
+}
+
 // ── State transitions ─────────────────────────────────────────────────────────
 function startGame() {
   score1 = 0; score2 = 0;
@@ -263,7 +282,6 @@ function startGame() {
 }
 
 function startRound() {
-  // Ball is the base rate; snake ticks snakeMultiplier times per ball tick.
   ballTickMs = 1000 / getBallTps(parseInt(bSpdSl.value));
   tickMs     = ballTickMs / snakeMultiplier;
   const { s1: ns1, s2: ns2 } = createSnakes(parseInt(lenSl.value));
@@ -273,11 +291,13 @@ function startRound() {
   if (powerupsEnabled) resetPowerupState();
   overlay.style.display = 'none';
   phase = 'playing';
+  if (onlineRole === 'host') sendState();
   startLoop();
 }
 
 function endRound() {
   phase = 'roundend';
+  if (onlineRole === 'host') sendState();
   setTimeout(() => { if (phase === 'roundend') startRound(); }, 1000);
 }
 
@@ -288,6 +308,7 @@ function pause() {
   ovMsg.textContent    = 'Press ESC or click Resume to continue.';
   startBtn.textContent = 'RESUME';
   overlay.style.display = 'flex';
+  if (onlineRole === 'host') sendState();
 }
 
 function resume() {
@@ -296,17 +317,190 @@ function resume() {
   lastTs = performance.now();
   tickAccum = 0;
   resumeBgm();
+  if (onlineRole === 'host') sendState();
 }
 
 function endGame(winner) {
   phase = 'gameover';
   stopBgm();
   sfxWin();
+  pendingSfx.push('win');
   ovTitle.textContent  = `PLAYER ${winner} WINS!`;
   ovMsg.textContent    = `Final score: ${score1} – ${score2}`;
   startBtn.textContent = 'PLAY AGAIN';
   overlay.style.display = 'flex';
+  if (onlineRole === 'host') sendState(winner);
 }
+
+// ── Online: state serialisation ───────────────────────────────────────────────
+function sendState(winner = null) {
+  if (!net) return;
+  const sfxToSend = pendingSfx.splice(0); // drain and send
+  net.send({
+    type: 'relay',
+    payload: {
+      type:   'state',
+      phase,  score1, score2, winner,
+      s1:   s1   ? { body: s1.body,   dir: s1.dir,   color: s1.color,   speedMult: s1.speedMult   } : null,
+      s2:   s2   ? { body: s2.body,   dir: s2.dir,   color: s2.color,   speedMult: s2.speedMult   } : null,
+      ball:           ball   ? { x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy } : null,
+      powerupsOnField,
+      activeEffects,
+      powerupsEnabled,
+      sfx: sfxToSend,
+    }
+  });
+}
+
+function applyRemoteState(payload) {
+  const prevPhase = phase;
+
+  s1    = payload.s1;
+  s2    = payload.s2;
+  ball  = payload.ball;
+  score1 = payload.score1; score2 = payload.score2;
+  phase  = payload.phase;
+  p1Pts.textContent = score1;
+  p2Pts.textContent = score2;
+  powerupsOnField  = payload.powerupsOnField || [];
+  activeEffects    = payload.activeEffects   || [];
+  powerupsEnabled  = payload.powerupsEnabled ?? powerupsEnabled;
+
+  // BGM management
+  if (phase === 'playing'  && prevPhase !== 'playing'  && prevPhase !== 'roundend') startBgm();
+  if (phase === 'paused'   && prevPhase === 'playing')  pauseBgm();
+  if (phase === 'playing'  && prevPhase === 'paused')   resumeBgm();
+  if (phase === 'gameover' && prevPhase !== 'gameover') stopBgm();
+
+  // Overlay
+  if (phase === 'playing' || phase === 'roundend') {
+    overlay.style.display = 'none';
+  } else if (phase === 'gameover') {
+    ovTitle.textContent   = `PLAYER ${payload.winner} WINS!`;
+    ovMsg.textContent     = `Final score: ${score1} – ${score2}`;
+    startBtn.style.display = 'none';
+    overlay.style.display = 'flex';
+  } else if (phase === 'paused') {
+    ovTitle.textContent   = 'PAUSED';
+    ovMsg.textContent     = 'Host has paused the game.';
+    startBtn.style.display = 'none';
+    overlay.style.display = 'flex';
+  }
+
+  // SFX
+  for (const sfx of (payload.sfx || [])) {
+    if (sfx === 'ballHit') sfxBallHit();
+    else if (sfx === 'score')   sfxScore();
+    else if (sfx === 'death')   sfxDeath();
+    else if (sfx === 'win')     sfxWin();
+    else if (sfx === 'powerup') sfxPowerup();
+  }
+}
+
+function applyGuestInput({ dx, dy }) {
+  if (phase !== 'playing' || !s2) return;
+  if (dx !== 0 && s2.dir.x === -dx) return;
+  if (dy !== 0 && s2.dir.y === -dy) return;
+  s2.nextDir = { x: dx, y: dy };
+}
+
+// ── Online UI ─────────────────────────────────────────────────────────────────
+async function connectNet() {
+  if (net) return; // already connected
+  const n = createNetwork(WS_URL);
+  await n.connect();  // throws on failure
+  net = n;
+  net.on('opponent_left', () => {
+    const wasPlaying = phase === 'playing' || phase === 'paused';
+    onlineRole = null;
+    net = null;
+    if (wasPlaying) { stopBgm(); phase = 'gameover'; }
+    ovTitle.textContent   = 'OPPONENT LEFT';
+    ovMsg.textContent     = 'Your opponent disconnected.';
+    startBtn.textContent  = 'PLAY AGAIN';
+    startBtn.style.display = '';
+    overlay.style.display = 'flex';
+  });
+  net.on('disconnect', () => { onlineRole = null; net = null; });
+}
+
+onlineBtn.addEventListener('click', () => {
+  mainMenu.style.display = 'none';
+  onlinePanel.style.display = 'flex';
+});
+
+onlineBack.addEventListener('click', () => {
+  if (net) { net.close(); net = null; }
+  onlineRole = null;
+  onlinePanel.style.display = 'none';
+  mainMenu.style.display = 'flex';
+  roomCodeEl.textContent  = '';
+  onlineStatus.textContent = '';
+  joinCodeEl.value = '';
+  hostBtn.disabled = false;
+  joinBtn.disabled = false;
+});
+
+hostBtn.addEventListener('click', async () => {
+  hostBtn.disabled = true;
+  onlineStatus.textContent = 'Connecting…';
+  try {
+    await connectNet();
+  } catch {
+    onlineStatus.textContent = 'Cannot reach server. Is it running?';
+    hostBtn.disabled = false;
+    return;
+  }
+  net.send({ type: 'host' });
+  net.on('hosted', ({ code }) => {
+    roomCodeEl.textContent   = code;
+    onlineStatus.textContent = 'Share this code. Waiting for opponent…';
+  });
+  net.on('guest_joined', () => {
+    onlineStatus.textContent = 'Opponent joined!';
+    onlineRole = 'host';
+    net.on('relay', ({ payload }) => {
+      if (payload.type === 'input') applyGuestInput(payload);
+    });
+    // Switch back to main menu overlay and start
+    onlinePanel.style.display = 'none';
+    mainMenu.style.display    = 'flex';
+    startBtn.style.display    = '';
+    startGame();
+  });
+});
+
+joinBtn.addEventListener('click', async () => {
+  const code = joinCodeEl.value.trim().toUpperCase();
+  if (!code) { onlineStatus.textContent = 'Enter a room code.'; return; }
+  joinBtn.disabled = true;
+  onlineStatus.textContent = 'Connecting…';
+  try {
+    await connectNet();
+  } catch {
+    onlineStatus.textContent = 'Cannot reach server. Is it running?';
+    joinBtn.disabled = false;
+    return;
+  }
+  net.send({ type: 'join', code });
+  net.on('error', ({ reason }) => {
+    onlineStatus.textContent = reason;
+    joinBtn.disabled = false;
+  });
+  net.on('joined', () => {
+    onlineRole = 'guest';
+    onlinePanel.style.display = 'none';
+    mainMenu.style.display    = 'flex';
+    ovTitle.textContent       = 'CONNECTED';
+    ovMsg.textContent         = 'Waiting for host to start…';
+    startBtn.style.display    = 'none';
+    overlay.style.display     = 'flex';
+    startLoop();
+    net.on('relay', ({ payload }) => {
+      if (payload.type === 'state') applyRemoteState(payload);
+    });
+  });
+});
 
 // ── Settings modal ────────────────────────────────────────────────────────────
 settingsBtn.addEventListener('click', () => settingsModal.classList.add('open'));
@@ -315,12 +509,10 @@ document.getElementById('close-settings').addEventListener('click', () => {
   settingsModal.classList.remove('open');
 });
 
-// Close on backdrop click
 settingsModal.addEventListener('click', e => {
   if (e.target === settingsModal) settingsModal.classList.remove('open');
 });
 
-// Snake multiplier toggle
 multGroup.addEventListener('click', e => {
   const btn = e.target.closest('.mult-btn');
   if (!btn) return;
@@ -328,7 +520,6 @@ multGroup.addEventListener('click', e => {
   multGroup.querySelectorAll('.mult-btn').forEach(b => b.classList.toggle('active', b === btn));
 });
 
-// Power-up toggle
 puToggle.addEventListener('click', () => {
   powerupsEnabled = !powerupsEnabled;
   puToggle.classList.toggle('active', powerupsEnabled);
@@ -343,16 +534,23 @@ registerInput({
       settingsModal.classList.remove('open');
       return;
     }
+    if (onlineRole === 'guest') return; // guest cannot pause
     if (phase === 'playing') pause();
     else if (phase === 'paused') resume();
   },
   onDirectionP1(dx, dy) {
+    if (onlineRole === 'guest') return; // guest controls P2 only
     if (phase !== 'playing' || !s1) return;
     if (dx !== 0 && s1.dir.x === -dx) return;
     if (dy !== 0 && s1.dir.y === -dy) return;
     s1.nextDir = { x: dx, y: dy };
   },
   onDirectionP2(dx, dy) {
+    if (onlineRole === 'guest') {
+      if (!net) return;
+      net.send({ type: 'relay', payload: { type: 'input', dx, dy } });
+      return;
+    }
     if (phase !== 'playing' || !s2) return;
     if (dx !== 0 && s2.dir.x === -dx) return;
     if (dy !== 0 && s2.dir.y === -dy) return;
@@ -362,6 +560,7 @@ registerInput({
 
 // ── UI events ─────────────────────────────────────────────────────────────────
 startBtn.addEventListener('click', () => {
+  if (onlineRole === 'guest') return;
   if (phase === 'paused') { resume(); return; }
   startGame();
 });

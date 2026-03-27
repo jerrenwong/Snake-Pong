@@ -1,0 +1,11 @@
+{
+  "name": "snake-pong",
+  "version": "1.0.0",
+  "description": "Two-player Snake Pong game with optional online multiplayer",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8"
+  }
+}
