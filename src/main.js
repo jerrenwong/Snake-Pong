@@ -70,7 +70,7 @@ let onlineRole = null;  // null | 'host' | 'guest'
 let net        = null;
 let pendingSfx = [];    // SFX events bundled into next state send
 
-const WS_URL = `ws://${window.location.host}`;
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 
 // ── RAF loop ──────────────────────────────────────────────────────────────────
 let rafId = null, lastTs = 0;
