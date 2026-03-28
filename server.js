@@ -54,7 +54,10 @@ function genCode() {
   return code;
 }
 
-wss.on('connection', ws => {
+wss.on('connection', (ws, req) => {
+  // Disable Nagle's algorithm for minimum relay latency
+  req.socket.setNoDelay(true);
+
   ws._code = null;
   ws._role = null;
 

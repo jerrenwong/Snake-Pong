@@ -66,9 +66,11 @@ let nextSpawnAt2         = 0;
 let _effectUid           = 0;
 
 // ── Online state ──────────────────────────────────────────────────────────────
-let onlineRole = null;  // null | 'host' | 'guest'
-let net        = null;
-let pendingSfx = [];    // SFX events bundled into next state send
+let onlineRole          = null;  // null | 'host' | 'guest'
+let net                 = null;
+let pendingSfx          = [];    // SFX events bundled into next state send
+let lastStateReceivedAt = 0;     // performance.now() when last host state arrived
+let remoteBallTickMs    = 200;   // ball tick interval reported by host (for extrapolation)
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 
@@ -88,10 +90,15 @@ function startLoop() {
 function loop(ts) {
   rafId = requestAnimationFrame(loop);
 
-  // ── Guest: just render latest received state ──────────────────────────────
+  // ── Guest: render latest received state with ball extrapolation ───────────
   if (onlineRole === 'guest') {
     if (s1 && s2 && ball) {
-      draw(s1, s2, ball,
+      // Extrapolate ball position forward using known velocity to smooth
+      // out the gaps between state updates (sent only on ticks now).
+      const elapsed = ts - lastStateReceivedAt;
+      const ticks   = Math.min(elapsed / remoteBallTickMs, 1.5);
+      const renderBall = { ...ball, x: ball.x + ball.vx * ticks, y: ball.y + ball.vy * ticks };
+      draw(s1, s2, renderBall,
         powerupsEnabled ? powerupsOnField : [],
         powerupsEnabled ? activeEffects   : []);
     }
@@ -100,6 +107,8 @@ function loop(ts) {
 
   const dt = Math.min(ts - lastTs, 150);
   lastTs = ts;
+
+  let stateChanged = false;
 
   if (phase === 'playing') {
     // Power-up spawn (per-player, max 1 each, 5s cooldown + geometric E[wait]=10s)
@@ -114,6 +123,7 @@ function loop(ts) {
           if (pu) {
             powerupsOnField.push(pu);
             setTimer(ts + SPAWN_COOLDOWN_MS);
+            stateChanged = true;
           }
         }
       }
@@ -124,13 +134,14 @@ function loop(ts) {
         powerupsOnField = powerupsOnField.filter(fp => fp.uid !== p.uid);
         if (p.player === 1) nextSpawnAt1 = ts + SPAWN_COOLDOWN_MS;
         else                nextSpawnAt2 = ts + SPAWN_COOLDOWN_MS;
+        stateChanged = true;
       }
     }
 
     // Effect expiry
     if (powerupsEnabled) {
       const expired = activeEffects.filter(e => ts >= e.expiresAt);
-      for (const e of expired) removeEffect(e);
+      for (const e of expired) { removeEffect(e); stateChanged = true; }
     }
 
     // Snake ticks (snakeMultiplier × speedMult per ball tick)
@@ -138,6 +149,7 @@ function loop(ts) {
     while (tickAccum >= tickMs) {
       tick();
       tickAccum -= tickMs;
+      stateChanged = true;
       if (phase !== 'playing') { tickAccum = 0; ballTickAccum = 0; break; }
     }
 
@@ -155,6 +167,7 @@ function loop(ts) {
         const prevVx = ball.vx, prevVy = ball.vy;
         const scorer = stepBall(ball, s1, s2);
         ballTickAccum -= effMs;
+        stateChanged = true;
         if (scorer !== null) {
           sfxScore();
           pendingSfx.push('score');
@@ -173,8 +186,9 @@ function loop(ts) {
     powerupsEnabled ? powerupsOnField : [],
     powerupsEnabled ? activeEffects   : []);
 
-  // Send state snapshot to guest each frame when playing online as host
-  if (onlineRole === 'host' && phase === 'playing') sendState();
+  // Send state only when game state actually changed (on ticks), not every frame.
+  // This reduces network traffic from ~60 msg/sec to ~5–10 msg/sec.
+  if (onlineRole === 'host' && phase === 'playing' && stateChanged) sendState();
 }
 
 // ── Game logic ────────────────────────────────────────────────────────────────
@@ -344,6 +358,7 @@ function sendState(winner = null) {
       s1:   s1   ? { body: s1.body,   dir: s1.dir,   color: s1.color,   speedMult: s1.speedMult   } : null,
       s2:   s2   ? { body: s2.body,   dir: s2.dir,   color: s2.color,   speedMult: s2.speedMult   } : null,
       ball:           ball   ? { x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy } : null,
+      ballTickMs,
       powerupsOnField,
       activeEffects,
       powerupsEnabled,
@@ -358,6 +373,8 @@ function applyRemoteState(payload) {
   s1    = payload.s1;
   s2    = payload.s2;
   ball  = payload.ball;
+  lastStateReceivedAt = performance.now();
+  if (payload.ballTickMs) remoteBallTickMs = payload.ballTickMs;
   score1 = payload.score1; score2 = payload.score2;
   phase  = payload.phase;
   p1Pts.textContent = score1;
@@ -548,6 +565,12 @@ registerInput({
   onDirectionP2(dx, dy) {
     if (onlineRole === 'guest') {
       if (!net) return;
+      // Client-side prediction: update direction locally for immediate visual
+      // feedback; host confirms on next state update.
+      if (s2 && phase === 'playing') {
+        const reversing = (dx !== 0 && s2.dir.x === -dx) || (dy !== 0 && s2.dir.y === -dy);
+        if (!reversing) s2.dir = { x: dx, y: dy };
+      }
       net.send({ type: 'relay', payload: { type: 'input', dx, dy } });
       return;
     }
