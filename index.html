@@ -412,9 +412,9 @@
       flex-shrink: 0;
     }
 
-    .mult-group { display: flex; gap: 6px; }
+    .mult-group, .map-group { display: flex; gap: 6px; }
 
-    .mult-btn {
+    .mult-btn, .map-btn {
       background: transparent;
       border: 1px solid #2a2a2a;
       color: #444;
@@ -425,8 +425,8 @@
       cursor: pointer;
       transition: all 0.1s;
     }
-    .mult-btn:hover { border-color: #0ff; color: #0ff; }
-    .mult-btn.active {
+    .mult-btn:hover, .map-btn:hover { border-color: #0ff; color: #0ff; }
+    .mult-btn.active, .map-btn.active {
       border-color: #0ff;
       color: #0ff;
       background: rgba(0,255,255,0.07);
@@ -491,7 +491,7 @@
       <!-- Main menu (start / pause / gameover) -->
       <div id="main-menu">
         <h2 id="ov-title">SNAKE PONG</h2>
-        <p id="ov-msg">Deflect the ball past your opponent.<br>Avoid the walls and the center divider.</p>
+        <p id="ov-msg">Deflect the ball past your opponent.<br>Avoid the walls. Snakes can cross the centre.</p>
         <button id="start-btn">START GAME</button>
         <button id="online-btn">PLAY ONLINE</button>
       </div>
@@ -575,6 +575,14 @@
       <div class="cfg-row">
         <input type="range" id="win-sl" min="1" max="20" value="7" />
         <span class="cfg-val" id="win-v">7</span>
+      </div>
+    </div>
+
+    <div class="cfg-item">
+      <span class="cfg-label">Map</span>
+      <div class="map-group" id="map-group">
+        <button class="map-btn active" data-map="open">Open</button>
+        <button class="map-btn"        data-map="smiley">:)</button>
       </div>
     </div>
 

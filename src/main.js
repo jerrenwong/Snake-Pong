@@ -11,6 +11,7 @@ import { POWERUP_DEFS, spawnPowerup,
          FIELD_EXPIRE_MS }                                from './powerups.js';
 import { WALL_L, WALL_R }                                 from './constants.js';
 import { createNetwork }                                  from './network.js';
+import { MAPS, DEFAULT_MAP }                              from './maps.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const lenSl  = document.getElementById('len-sl');
@@ -28,6 +29,7 @@ const p2Pts      = document.getElementById('p2-pts');
 const settingsBtn   = document.getElementById('settings-btn');
 const settingsModal = document.getElementById('settings-modal');
 const multGroup     = document.getElementById('mult-group');
+const mapGroup      = document.getElementById('map-group');
 const puToggle      = document.getElementById('pu-toggle');
 const puLegend      = document.getElementById('powerup-legend');
 
@@ -55,6 +57,9 @@ let phase  = 'menu'; // menu | playing | paused | roundend | gameover
 let score1 = 0, score2 = 0;
 let s1 = null, s2 = null, ball = null;
 let snakeMultiplier = 1;
+
+// ── Map state ─────────────────────────────────────────────────────────────────
+let currentMap = DEFAULT_MAP;
 
 // ── Power-up state ────────────────────────────────────────────────────────────
 let powerupsEnabled      = false;
@@ -100,7 +105,8 @@ function loop(ts) {
       const renderBall = { ...ball, x: ball.x + ball.vx * ticks, y: ball.y + ball.vy * ticks };
       draw(s1, s2, renderBall,
         powerupsEnabled ? powerupsOnField : [],
-        powerupsEnabled ? activeEffects   : []);
+        powerupsEnabled ? activeEffects   : [],
+        currentMap.cells);
     }
     return;
   }
@@ -119,7 +125,7 @@ function loop(ts) {
       ]) {
         const hasOne = powerupsOnField.some(p => p.player === player);
         if (!hasOne && ts >= getTimer() && Math.random() < dt / SPAWN_EXPECTED_MS) {
-          const pu = spawnPowerup(s1, s2, powerupsOnField, player, ts);
+          const pu = spawnPowerup(s1, s2, powerupsOnField, player, ts, currentMap.walls);
           if (pu) {
             powerupsOnField.push(pu);
             setTimer(ts + SPAWN_COOLDOWN_MS);
@@ -165,7 +171,7 @@ function loop(ts) {
       }
       while (ballTickAccum >= effMs) {
         const prevVx = ball.vx, prevVy = ball.vy;
-        const scorer = stepBall(ball, s1, s2);
+        const scorer = stepBall(ball, s1, s2, currentMap.walls);
         ballTickAccum -= effMs;
         stateChanged = true;
         if (scorer !== null) {
@@ -184,7 +190,8 @@ function loop(ts) {
 
   draw(s1, s2, ball,
     powerupsEnabled ? powerupsOnField : [],
-    powerupsEnabled ? activeEffects   : []);
+    powerupsEnabled ? activeEffects   : [],
+    currentMap.cells);
 
   // Send state only when game state actually changed (on ticks), not every frame.
   // This reduces network traffic from ~60 msg/sec to ~5–10 msg/sec.
@@ -204,8 +211,8 @@ function tick() {
     }
   }
 
-  const d1 = snakeHitsDeath(s1);
-  const d2 = snakeHitsDeath(s2);
+  const d1 = snakeHitsDeath(s1, currentMap.walls);
+  const d2 = snakeHitsDeath(s2, currentMap.walls);
   if (d1 && d2) { sfxDeath(); pendingSfx.push('death'); endRound(); return; }
   if (d1)       { sfxDeath(); pendingSfx.push('death'); awardPoint(2); return; }
   if (d2)       { sfxDeath(); pendingSfx.push('death'); awardPoint(1); return; }
@@ -355,6 +362,7 @@ function sendState(winner = null) {
     payload: {
       type:   'state',
       phase,  score1, score2, winner,
+      mapId:  currentMap.id,
       s1:   s1   ? { body: s1.body,   dir: s1.dir,   color: s1.color,   speedMult: s1.speedMult   } : null,
       s2:   s2   ? { body: s2.body,   dir: s2.dir,   color: s2.color,   speedMult: s2.speedMult   } : null,
       ball:           ball   ? { x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy } : null,
@@ -375,6 +383,10 @@ function applyRemoteState(payload) {
   ball  = payload.ball;
   lastStateReceivedAt = performance.now();
   if (payload.ballTickMs) remoteBallTickMs = payload.ballTickMs;
+  if (payload.mapId) {
+    const m = MAPS.find(m => m.id === payload.mapId);
+    if (m) currentMap = m;
+  }
   score1 = payload.score1; score2 = payload.score2;
   phase  = payload.phase;
   p1Pts.textContent = score1;
@@ -520,14 +532,22 @@ joinBtn.addEventListener('click', async () => {
 });
 
 // ── Settings modal ────────────────────────────────────────────────────────────
-settingsBtn.addEventListener('click', () => settingsModal.classList.add('open'));
+function openSettings() {
+  settingsModal.classList.add('open');
+  if (phase === 'playing' && onlineRole !== 'guest') pause();
+}
 
-document.getElementById('close-settings').addEventListener('click', () => {
+function closeSettings() {
   settingsModal.classList.remove('open');
-});
+  if (phase === 'paused' && onlineRole !== 'guest') resume();
+}
+
+settingsBtn.addEventListener('click', openSettings);
+
+document.getElementById('close-settings').addEventListener('click', closeSettings);
 
 settingsModal.addEventListener('click', e => {
-  if (e.target === settingsModal) settingsModal.classList.remove('open');
+  if (e.target === settingsModal) closeSettings();
 });
 
 multGroup.addEventListener('click', e => {
@@ -535,6 +555,14 @@ multGroup.addEventListener('click', e => {
   if (!btn) return;
   snakeMultiplier = parseInt(btn.dataset.mult);
   multGroup.querySelectorAll('.mult-btn').forEach(b => b.classList.toggle('active', b === btn));
+});
+
+mapGroup.addEventListener('click', e => {
+  const btn = e.target.closest('.map-btn');
+  if (!btn) return;
+  const m = MAPS.find(m => m.id === btn.dataset.map);
+  if (m) currentMap = m;
+  mapGroup.querySelectorAll('.map-btn').forEach(b => b.classList.toggle('active', b === btn));
 });
 
 puToggle.addEventListener('click', () => {
@@ -548,7 +576,7 @@ puToggle.addEventListener('click', () => {
 registerInput({
   onEscape() {
     if (settingsModal.classList.contains('open')) {
-      settingsModal.classList.remove('open');
+      closeSettings();
       return;
     }
     if (onlineRole === 'guest') return; // guest cannot pause
