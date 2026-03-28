@@ -1,4 +1,4 @@
-import { COLS, ROWS } from './constants.js';
+import { COLS, ROWS, WALL_L, WALL_R } from './constants.js';
 
 // ── Entity factories ──────────────────────────────────────────────────────────
 
