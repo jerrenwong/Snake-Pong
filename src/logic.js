@@ -1,4 +1,4 @@
-import { COLS, ROWS, WALL_L, WALL_R } from './constants.js';
+import { COLS, ROWS } from './constants.js';
 
 // ── Entity factories ──────────────────────────────────────────────────────────
 
@@ -46,10 +46,11 @@ export function stepSnake(snake) {
   snake.body.pop();
 }
 
-export function snakeHitsDeath(snake) {
+// wallSet: Set<"x,y"> of impassable map-wall cells (null/undefined = no walls)
+export function snakeHitsDeath(snake, wallSet) {
   const h = snake.body[0];
   if (h.x < 0 || h.x >= COLS || h.y < 0 || h.y >= ROWS) return true;
-  if (h.x === WALL_L || h.x === WALL_R) return true;
+  if (wallSet && wallSet.has(`${h.x},${h.y}`)) return true;
   return snake.body.slice(1).some(c => c.x === h.x && c.y === h.y);
 }
 
@@ -65,7 +66,8 @@ export function snakesCollide(s1, s2) {
 
 // Returns null if no score, or 1/2 for the player who earned the point.
 // Mutates ball position in place.
-export function stepBall(ball, s1, s2) {
+// wallSet: Set<"x,y"> of impassable map-wall cells (null/undefined = no walls)
+export function stepBall(ball, s1, s2, wallSet) {
   let nx = ball.x + ball.vx;
   let ny = ball.y + ball.vy;
 
@@ -80,11 +82,12 @@ export function stepBall(ball, s1, s2) {
   // Ball exits right → P2 missed → P1 scores
   if (nx >= COLS) return 1;
 
-  // Snake deflection — check horizontal and vertical axes separately
+  // Obstacle check: snake bodies + map walls
+  const w = (x, y) => wallSet ? wallSet.has(`${x},${y}`) : false;
   const allSegs = [...s1.body, ...s2.body];
-  const hHit = allSegs.some(c => c.x === nx    && c.y === ball.y);
-  const vHit = allSegs.some(c => c.x === ball.x && c.y === ny);
-  const dHit = !hHit && !vHit && allSegs.some(c => c.x === nx && c.y === ny);
+  const hHit = w(nx, ball.y) || allSegs.some(c => c.x === nx    && c.y === ball.y);
+  const vHit = w(ball.x, ny) || allSegs.some(c => c.x === ball.x && c.y === ny);
+  const dHit = !hHit && !vHit && (w(nx, ny) || allSegs.some(c => c.x === nx && c.y === ny));
 
   if (hHit || vHit || dHit) {
     if (hHit) ball.vx = -ball.vx;

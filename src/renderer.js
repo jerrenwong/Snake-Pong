@@ -1,4 +1,5 @@
 import { CELL, COLS, ROWS, W, H, WALL_L, WALL_R } from './constants.js';
+// WALL_L / WALL_R are kept for the background half-tint only (no longer death barriers)
 import { POWERUP_DEFS } from './powerups.js';
 
 function buildBackground(ctx) {
@@ -12,15 +13,6 @@ function buildBackground(ctx) {
   }
   for (let r = 0; r <= ROWS; r++) {
     ctx.beginPath(); ctx.moveTo(0, r * CELL); ctx.lineTo(W, r * CELL); ctx.stroke();
-  }
-
-  ctx.fillStyle = '#1e1e1e';
-  ctx.fillRect(WALL_L * CELL, 0, 2 * CELL, H);
-
-  ctx.strokeStyle = '#2c2c2c';
-  ctx.lineWidth = 1;
-  for (let r = 0; r < ROWS; r++) {
-    ctx.strokeRect(WALL_L * CELL + 1, r * CELL + 1, 2 * CELL - 2, CELL - 2);
   }
 
   ctx.fillStyle = 'rgba(0, 160, 255, 0.03)';
@@ -143,10 +135,21 @@ export function createRenderer(canvas) {
     ctx.textBaseline = 'alphabetic';
   }
 
-  function draw(s1, s2, ball, powerups = [], effects = []) {
+  function draw(s1, s2, ball, powerups = [], effects = [], wallCells = []) {
     const now = performance.now();
     ctx.drawImage(bgCanvas, 0, 0);
     if (!s1 || !s2 || !ball) return;
+
+    // Draw map wall cells
+    if (wallCells.length > 0) {
+      ctx.fillStyle = '#1a1a2e';
+      for (const { x, y } of wallCells)
+        ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+      ctx.strokeStyle = '#2a2a50';
+      ctx.lineWidth = 1;
+      for (const { x, y } of wallCells)
+        ctx.strokeRect(x * CELL + 0.5, y * CELL + 0.5, CELL - 1, CELL - 1);
+    }
 
     drawPowerups(powerups, now);
     drawSnake(ctx, s1);

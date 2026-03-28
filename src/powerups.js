@@ -1,4 +1,4 @@
-import { COLS, ROWS, WALL_L, WALL_R } from './constants.js';
+import { COLS, ROWS, WALL_L, WALL_R } from './constants.js'; // WALL_L/WALL_R used for half-boundary only
 
 // ── Power-up definitions ──────────────────────────────────────────────────────
 // Each entry: label, color, glow, duration (ms), description
@@ -36,18 +36,16 @@ let _uid = 0;
 
 // Spawns a power-up in the given player's half (player = 1 or 2).
 // Returns { uid, type, player, x, y, fieldExpiresAt } or null if no free cell.
-export function spawnPowerup(s1, s2, existing, player, now) {
+// wallSet: Set<"x,y"> of impassable map-wall cells (null/undefined = no extra walls)
+export function spawnPowerup(s1, s2, existing, player, now, wallSet = null) {
   const blocked = new Set();
 
   // Snake body cells
   for (const seg of s1.body) blocked.add(`${seg.x},${seg.y}`);
   for (const seg of s2.body) blocked.add(`${seg.x},${seg.y}`);
 
-  // Wall columns
-  for (let r = 0; r < ROWS; r++) {
-    blocked.add(`${WALL_L},${r}`);
-    blocked.add(`${WALL_R},${r}`);
-  }
+  // Map wall cells
+  if (wallSet) for (const key of wallSet) blocked.add(key);
 
   // Existing power-ups on field
   for (const p of existing) blocked.add(`${p.x},${p.y}`);
