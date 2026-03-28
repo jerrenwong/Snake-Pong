@@ -532,14 +532,22 @@ joinBtn.addEventListener('click', async () => {
 });
 
 // ── Settings modal ────────────────────────────────────────────────────────────
-settingsBtn.addEventListener('click', () => settingsModal.classList.add('open'));
+function openSettings() {
+  settingsModal.classList.add('open');
+  if (phase === 'playing' && onlineRole !== 'guest') pause();
+}
 
-document.getElementById('close-settings').addEventListener('click', () => {
+function closeSettings() {
   settingsModal.classList.remove('open');
-});
+  if (phase === 'paused' && onlineRole !== 'guest') resume();
+}
+
+settingsBtn.addEventListener('click', openSettings);
+
+document.getElementById('close-settings').addEventListener('click', closeSettings);
 
 settingsModal.addEventListener('click', e => {
-  if (e.target === settingsModal) settingsModal.classList.remove('open');
+  if (e.target === settingsModal) closeSettings();
 });
 
 multGroup.addEventListener('click', e => {
@@ -568,7 +576,7 @@ puToggle.addEventListener('click', () => {
 registerInput({
   onEscape() {
     if (settingsModal.classList.contains('open')) {
-      settingsModal.classList.remove('open');
+      closeSettings();
       return;
     }
     if (onlineRole === 'guest') return; // guest cannot pause

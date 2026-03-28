@@ -10,32 +10,26 @@ function defineMap(id, name, cells) {
   return { id, name, cells, walls: makeWallSet(cells) };
 }
 
-// Smiley face centred at (17, 12) — the grid centre of a 36×26 board.
+// Smiley face centred at (17, 12) — eyes and smile only, no outer ring.
 function smileyCells() {
   const cx = 17, cy = 12;
   const cells = [];
 
-  // Face outline: ring where 22 ≤ dx²+dy² ≤ 44  (approx radius 4.7–6.6 cells)
-  for (let dy = -7; dy <= 7; dy++) {
-    for (let dx = -7; dx <= 7; dx++) {
-      const r2 = dx * dx + dy * dy;
-      if (r2 >= 22 && r2 <= 44) cells.push({ x: cx + dx, y: cy + dy });
-    }
-  }
+  // Left eye (3×3 block)
+  for (let ey = 0; ey <= 2; ey++)
+    for (let ex = 0; ex <= 2; ex++)
+      cells.push({ x: cx - 5 + ex, y: cy - 3 + ey });
 
-  // Left eye (2×2 block)
-  for (let ey = 0; ey <= 1; ey++)
-    for (let ex = 0; ex <= 1; ex++)
-      cells.push({ x: cx - 3 + ex, y: cy - 2 + ey });
+  // Right eye (3×3 block)
+  for (let ey = 0; ey <= 2; ey++)
+    for (let ex = 0; ex <= 2; ex++)
+      cells.push({ x: cx + 3 + ex, y: cy - 3 + ey });
 
-  // Right eye (2×2 block)
-  for (let ey = 0; ey <= 1; ey++)
-    for (let ex = 0; ex <= 1; ex++)
-      cells.push({ x: cx + 2 + ex, y: cy - 2 + ey });
-
-  // Smile arc
-  [[-3, 2], [-2, 3], [-1, 3], [0, 3], [1, 3], [2, 3], [3, 2]]
-    .forEach(([dx, dy]) => cells.push({ x: cx + dx, y: cy + dy }));
+  // Smile: wide arc across the lower half of the face
+  [
+    [-5, 3], [-4, 4], [-3, 5], [-2, 5], [-1, 5],
+    [0, 5],  [1, 5],  [2, 5],  [3, 4],  [4, 3],
+  ].forEach(([dx, dy]) => cells.push({ x: cx + dx, y: cy + dy }));
 
   return cells;
 }
