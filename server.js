@@ -118,6 +118,14 @@ wss.on('connection', (ws, req) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
+// ── Keepalive pings (prevent Railway / proxy idle-timeout disconnects) ────
+const PING_INTERVAL = 15_000;
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.readyState === 1) ws.ping();
+  }
+}, PING_INTERVAL);
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Snake Pong running at http://localhost:${PORT}`);
