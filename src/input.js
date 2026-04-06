@@ -30,4 +30,34 @@ export function registerInput({ onEscape, onDirectionP1, onDirectionP2 }) {
     const d2 = P2_KEYS[e.key];
     if (d2) { onDirectionP2(d2[0], d2[1]); }
   });
+
+  // ── Touch swipe controls ─────────────────────────────────────────────────
+  const MIN_SWIPE = 20; // px threshold
+  let touchStartX = 0, touchStartY = 0;
+
+  document.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    touchStartX = t.clientX;
+    touchStartY = t.clientY;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', e => {
+    // Prevent scroll while playing
+    if (!e.target.closest('#settings-modal, #settings-panel')) e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('touchend', e => {
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchStartX;
+    const dy = t.clientY - touchStartY;
+    if (Math.abs(dx) < MIN_SWIPE && Math.abs(dy) < MIN_SWIPE) return;
+
+    let sx, sy;
+    if (Math.abs(dx) > Math.abs(dy)) { sx = dx > 0 ? 1 : -1; sy = 0; }
+    else                              { sx = 0; sy = dy > 0 ? 1 : -1; }
+
+    // Left half → P1, right half → P2
+    if (touchStartX < window.innerWidth / 2) onDirectionP1(sx, sy);
+    else                                      onDirectionP2(sx, sy);
+  });
 }
