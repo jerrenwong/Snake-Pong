@@ -41,6 +41,9 @@ def main() -> None:
     p.add_argument("--vs-random", action="store_true",
                    help="Opponent is random. Default: opponent is the same checkpoint (self-play eval).")
     p.add_argument("--vs-checkpoint", type=str, default=None)
+    p.add_argument("--render-gif", type=str, default=None,
+                   help="Write the first episode to this GIF path using rl.render.")
+    p.add_argument("--gif-fps", type=int, default=10)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
@@ -57,6 +60,20 @@ def main() -> None:
         opp = make_policy(opp_q, device, epsilon=0.0, rng=rng)
     else:
         opp = make_policy(q, device, epsilon=0.0, rng=rng)
+
+    if args.render_gif:
+        from .render import record_episode, save_gif
+
+        def action_fn(obs):
+            return greedy_action(q, obs, device)
+
+        frames, info = record_episode(
+            action_fn, opp,
+            snake_length=snake_length, seed=args.seed,
+        )
+        save_gif(frames, args.render_gif, fps=args.gif_fps)
+        print(f"Wrote {frames.shape[0]} frames to {args.render_gif} "
+              f"(won={info['won']}, length={info['length']}, terminal={info['terminal']})")
 
     env = SnakePongSelfPlayEnv(opponent_policy=opp, snake_length=snake_length, seed=args.seed)
 
