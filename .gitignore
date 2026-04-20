@@ -1,1 +1,4 @@
+__pycache__/
+*.pyc
+rl/runs/
 node_modules/
