@@ -78,11 +78,16 @@ No shaping. Episode ends on any score / death or after `--max-steps`.
 
 ## Observation
 
-Per-agent egocentric (board mirrored for player 2):
+Per-agent egocentric flat vector (board mirrored for player 2):
 
-- `grid`: `(5, 26, 36)` float binary channels — own head, own body,
-  opp head, opp body, ball.
-- `scalars`: `(6,)` — ball `(vx, vy)`, own `(dx, dy)`, opp `(dx, dy)`.
+- Own snake body, head-first, as `(x, y)` pairs normalized to `[0, 1]`
+  (`snake_length * 2` values).
+- Opponent body, same format (`snake_length * 2` values).
+- Ball: `(x, y, vx, vy)` — position normalized, velocity in `{-1, 0, 1}`.
+
+Total dimension: `4 * snake_length + 4` (= 20 for default `snake_length=4`).
+Snake length is fixed (no power-ups), so no padding / masking needed. The
+Q-network is a 3-hidden-layer MLP.
 
 ## Action
 

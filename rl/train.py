@@ -18,7 +18,7 @@ from .dqn import (
     N_ACTIONS, QNetwork, ReplayBuffer, Transition,
     compute_loss, epsilon_greedy_action,
 )
-from .gym_env import SnakePongSelfPlayEnv
+from .gym_env import SnakePongSelfPlayEnv, obs_dim
 from .selfplay import OpponentPool
 
 
@@ -38,10 +38,8 @@ def run_episode(
         next_obs, reward, terminated, truncated, info = env.step(action)
         # Only treat terminal (not truncation) as absorbing — Sutton & Barto.
         replay.push(Transition(
-            grid=obs["grid"], scalars=obs["scalars"],
-            action=action, reward=float(reward),
-            next_grid=next_obs["grid"], next_scalars=next_obs["scalars"],
-            done=bool(terminated),
+            obs=obs, action=action, reward=float(reward),
+            next_obs=next_obs, done=bool(terminated),
         ))
         obs = next_obs
         ep_reward += reward
@@ -61,8 +59,9 @@ def train(cfg: argparse.Namespace) -> None:
     rng = np.random.default_rng(cfg.seed)
     torch.manual_seed(cfg.seed)
 
-    q_net = QNetwork().to(device)
-    target_net = QNetwork().to(device)
+    d_obs = obs_dim(cfg.snake_length)
+    q_net = QNetwork(d_obs).to(device)
+    target_net = QNetwork(d_obs).to(device)
     target_net.load_state_dict(q_net.state_dict())
     target_net.eval()
     for p in target_net.parameters():
@@ -80,7 +79,7 @@ def train(cfg: argparse.Namespace) -> None:
         seed=int(rng.integers(1 << 31)),
     )
 
-    replay = ReplayBuffer(cfg.replay_capacity)
+    replay = ReplayBuffer(cfg.replay_capacity, d_obs)
 
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -14,17 +14,22 @@ import numpy as np
 import torch
 
 from .dqn import QNetwork, greedy_action
-from .gym_env import SnakePongSelfPlayEnv
+from .gym_env import SnakePongSelfPlayEnv, obs_dim
 from .selfplay import make_policy, random_policy
 
 
-def load_q(checkpoint: str, device: torch.device) -> QNetwork:
+def load_q(checkpoint: str, device: torch.device) -> tuple[QNetwork, int]:
     ckpt = torch.load(checkpoint, map_location=device)
-    state = ckpt["q_net"] if isinstance(ckpt, dict) and "q_net" in ckpt else ckpt
-    q = QNetwork().to(device)
+    if isinstance(ckpt, dict) and "q_net" in ckpt:
+        state = ckpt["q_net"]
+        snake_length = ckpt.get("config", {}).get("snake_length", 4)
+    else:
+        state = ckpt
+        snake_length = 4
+    q = QNetwork(obs_dim(snake_length)).to(device)
     q.load_state_dict(state)
     q.eval()
-    return q
+    return q, snake_length
 
 
 def main() -> None:
@@ -43,17 +48,17 @@ def main() -> None:
     device = torch.device(args.device)
     rng = np.random.default_rng(args.seed)
 
-    q = load_q(args.checkpoint, device)
+    q, snake_length = load_q(args.checkpoint, device)
 
     if args.vs_random:
         opp = random_policy(rng)
     elif args.vs_checkpoint:
-        opp_q = load_q(args.vs_checkpoint, device)
+        opp_q, _ = load_q(args.vs_checkpoint, device)
         opp = make_policy(opp_q, device, epsilon=0.0, rng=rng)
     else:
         opp = make_policy(q, device, epsilon=0.0, rng=rng)
 
-    env = SnakePongSelfPlayEnv(opponent_policy=opp, seed=args.seed)
+    env = SnakePongSelfPlayEnv(opponent_policy=opp, snake_length=snake_length, seed=args.seed)
 
     wins = 0
     losses = 0

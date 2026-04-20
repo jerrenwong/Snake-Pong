@@ -5,9 +5,16 @@ Design
 - The environment exposes one snake (the "learner") and wraps the other with a
   caller-supplied policy.
 - Observations are *egocentric*: always presented as if the learner is on the
-  left side. When the learner plays as s2 (right), we mirror the board
-  horizontally and flip actions/velocity accordingly.
+  left side. When the learner plays as s2 (right), we mirror the x-axis and
+  flip actions / x-velocity accordingly.
 - Reward is zero-sum: +1 on scoring, -1 on being scored / dying.
+
+Observation is a flat vector:
+    [own body (head-first, padded to snake_length) as (x,y) pairs normalized,
+     opp body same,
+     ball (x, y, vx, vy) — position normalized, velocity in {-1,0,1}]
+
+Snake bodies have a fixed length (no power-ups), so no padding mask needed.
 """
 from __future__ import annotations
 
@@ -18,61 +25,58 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from .env import COLS, ROWS, SnakePongGame, Snake, Ball
+from .env import COLS, ROWS, SnakePongGame, Snake
 
-# 6 channels: own_head, own_body, opp_head, opp_body, ball, ball_vel_dir_onehot_flat
-NUM_CHANNELS = 5
-SCALAR_DIM = 6  # ball_vx, ball_vy, own_dx, own_dy, opp_dx, opp_dy
 
 # Action mirror for right-side player (mirror x axis):
 #   up<->up, down<->down, left<->right
 _MIRROR_ACTION = {0: 0, 1: 1, 2: 3, 3: 2}
 
 
-OpponentPolicy = Callable[[dict], int]
-"""A callable that takes an egocentric observation dict and returns an action 0-3."""
+OpponentPolicy = Callable[[np.ndarray], int]
+"""A callable that takes an egocentric observation array and returns an action 0-3."""
 
 
-def random_opponent(obs: dict, rng: np.random.Generator | None = None) -> int:
+def obs_dim(snake_length: int) -> int:
+    # own body: snake_length * 2 + opp body: snake_length * 2 + ball: 4
+    return 4 * snake_length + 4
+
+
+def random_opponent(obs: np.ndarray, rng: np.random.Generator | None = None) -> int:
     r = rng if rng is not None else np.random.default_rng()
     return int(r.integers(0, 4))
 
 
-def _draw_snake(grid: np.ndarray, snake: Snake, head_ch: int, body_ch: int, mirror: bool) -> None:
+def _encode_body(snake: Snake, mirror: bool) -> np.ndarray:
+    out = np.empty(len(snake.body) * 2, dtype=np.float32)
+    nx = COLS - 1
+    ny = ROWS - 1
     for i, (x, y) in enumerate(snake.body):
-        xm = (COLS - 1 - x) if mirror else x
-        if 0 <= xm < COLS and 0 <= y < ROWS:
-            if i == 0:
-                grid[head_ch, y, xm] = 1.0
-            else:
-                grid[body_ch, y, xm] = 1.0
+        xm = (nx - x) if mirror else x
+        out[2 * i] = xm / nx
+        out[2 * i + 1] = y / ny
+    return out
 
 
-def _build_obs(game: SnakePongGame, as_player: int) -> dict:
-    """Build egocentric observation. `as_player` is 1 or 2."""
+def _build_obs(game: SnakePongGame, as_player: int) -> np.ndarray:
+    """Flat egocentric observation. `as_player` is 1 or 2."""
     mirror = as_player == 2
-    grid = np.zeros((NUM_CHANNELS, ROWS, COLS), dtype=np.float32)
-
     own = game.s1 if as_player == 1 else game.s2
     opp = game.s2 if as_player == 1 else game.s1
 
-    _draw_snake(grid, own, head_ch=0, body_ch=1, mirror=mirror)
-    _draw_snake(grid, opp, head_ch=2, body_ch=3, mirror=mirror)
+    own_body = _encode_body(own, mirror)
+    opp_body = _encode_body(opp, mirror)
+
     bx = (COLS - 1 - game.ball.x) if mirror else game.ball.x
-    if 0 <= bx < COLS and 0 <= game.ball.y < ROWS:
-        grid[4, game.ball.y, bx] = 1.0
-
     ball_vx = -game.ball.vx if mirror else game.ball.vx
-    own_dx = -own.dx if mirror else own.dx
-    opp_dx = -opp.dx if mirror else opp.dx
-
-    scalars = np.array([
-        ball_vx, game.ball.vy,
-        own_dx, own.dy,
-        opp_dx, opp.dy,
+    ball = np.array([
+        bx / (COLS - 1),
+        game.ball.y / (ROWS - 1),
+        float(ball_vx),
+        float(game.ball.vy),
     ], dtype=np.float32)
 
-    return {"grid": grid, "scalars": scalars}
+    return np.concatenate([own_body, opp_body, ball], axis=0)
 
 
 def _mirror_action(action: int) -> int:
@@ -82,7 +86,7 @@ def _mirror_action(action: int) -> int:
 @dataclass
 class EpisodeStats:
     length: int = 0
-    scorer: Optional[int] = None  # 1, 2, 0 (draw), or None (timeout)
+    scorer: Optional[int] = None
     terminal: str = ""
 
 
@@ -109,10 +113,9 @@ class SnakePongSelfPlayEnv(gym.Env):
         self._learner: int = 1
 
         self.action_space = spaces.Discrete(4)
-        self.observation_space = spaces.Dict({
-            "grid": spaces.Box(0.0, 1.0, shape=(NUM_CHANNELS, ROWS, COLS), dtype=np.float32),
-            "scalars": spaces.Box(-1.0, 1.0, shape=(SCALAR_DIM,), dtype=np.float32),
-        })
+        self.observation_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(obs_dim(snake_length),), dtype=np.float32,
+        )
         self._last_stats = EpisodeStats()
 
     def set_opponent(self, policy: OpponentPolicy) -> None:
@@ -136,10 +139,8 @@ class SnakePongSelfPlayEnv(gym.Env):
         return obs, {"learner_side": self._learner}
 
     def step(self, action: int):
-        # Learner action is egocentric. Map back to real board for the player's side.
         real_a_learner = action if self._learner == 1 else _mirror_action(action)
 
-        # Opponent observes from its own egocentric view.
         opp_side = 2 if self._learner == 1 else 1
         opp_obs = _build_obs(self._game, as_player=opp_side)
         opp_action = int(self.opponent_policy(opp_obs))
@@ -153,10 +154,9 @@ class SnakePongSelfPlayEnv(gym.Env):
         result = self._game.step(a1, a2)
         self._last_stats.length += 1
 
-        # Reward for learner
         if result.scorer is None:
             reward = 0.0
-        elif result.scorer == 0:  # both died — draw, no reward
+        elif result.scorer == 0:
             reward = 0.0
         elif result.scorer == self._learner:
             reward = 1.0
@@ -206,4 +206,3 @@ class SnakePongSelfPlayEnv(gym.Env):
                 row.append(ch)
             rows.append("".join(row))
         return "\n".join(rows)
-
