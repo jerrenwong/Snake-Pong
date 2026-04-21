@@ -104,7 +104,7 @@ def train(cfg: argparse.Namespace) -> None:
     # n_heads only used for arch='bootstrapped'
     q_net = build_q_net(cfg.model_arch, d_obs, n_heads=cfg.n_heads).to(device)
     target_net = build_q_net(cfg.model_arch, d_obs, n_heads=cfg.n_heads).to(device)
-    is_bootstrap = cfg.model_arch == "bootstrapped"
+    is_bootstrap = cfg.model_arch in ("bootstrapped", "bootstrapped_dueling")
 
     # Optionally warm-start from a prior checkpoint (must match arch and obs dim).
     if cfg.init_checkpoint:
@@ -394,8 +394,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save-every", type=int, default=25)
     p.add_argument("--print-every", type=int, default=1)
     # DQN
-    p.add_argument("--model-arch", type=str, default="dueling", choices=["mlp", "dueling", "bootstrapped"],
-                   help="Q-network architecture. 'bootstrapped' = K-headed ensemble for diversity.")
+    p.add_argument("--model-arch", type=str, default="dueling",
+                   choices=["mlp", "dueling", "bootstrapped", "bootstrapped_dueling"],
+                   help="Q-network architecture. 'bootstrapped_dueling' combines both.")
     p.add_argument("--n-heads", type=int, default=5,
                    help="Number of Q-heads in Bootstrapped DQN.")
     p.add_argument("--bootstrap-mask-prob", type=float, default=0.5,

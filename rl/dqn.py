@@ -107,6 +107,55 @@ class BootstrappedQNetwork(nn.Module):
         return self.heads[head_idx](h)
 
 
+class BootstrappedDuelingQNetwork(nn.Module):
+    """Bootstrapped DQN where each of the K heads is itself a Dueling pair.
+
+    Shared trunk → K independent (V-head, A-head) pairs. Each head computes
+    Q_k(s, a) = V_k(s) + A_k(s, a) - mean_a(A_k(s, ·)).
+    forward returns (B, K, n_actions), drop-in compatible with
+    BootstrappedQNetwork.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        n_actions: int = N_ACTIONS,
+        hidden: int = 256,
+        n_heads: int = 5,
+    ):
+        super().__init__()
+        self.n_heads = n_heads
+        self.n_actions = n_actions
+        self.trunk = nn.Sequential(
+            nn.Linear(obs_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+        )
+        self.value_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden, hidden), nn.ReLU(),
+                nn.Linear(hidden, 1),
+            )
+            for _ in range(n_heads)
+        ])
+        self.adv_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden, hidden), nn.ReLU(),
+                nn.Linear(hidden, n_actions),
+            )
+            for _ in range(n_heads)
+        ])
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        h = self.trunk(obs)
+        qs = []
+        for v_head, a_head in zip(self.value_heads, self.adv_heads):
+            v = v_head(h)               # (B, 1)
+            a = a_head(h)               # (B, A)
+            q = v + a - a.mean(dim=1, keepdim=True)
+            qs.append(q)
+        return torch.stack(qs, dim=1)   # (B, K, A)
+
+
 def build_q_net(arch: str, obs_dim: int, n_actions: int = N_ACTIONS, n_heads: int = 5) -> nn.Module:
     """Construct a Q-network by name. Use this everywhere to keep arch central."""
     if arch == "mlp":
@@ -115,6 +164,8 @@ def build_q_net(arch: str, obs_dim: int, n_actions: int = N_ACTIONS, n_heads: in
         return DuelingQNetwork(obs_dim, n_actions)
     if arch == "bootstrapped":
         return BootstrappedQNetwork(obs_dim, n_actions, n_heads=n_heads)
+    if arch == "bootstrapped_dueling":
+        return BootstrappedDuelingQNetwork(obs_dim, n_actions, n_heads=n_heads)
     raise ValueError(f"Unknown model arch: {arch}")
 
 
