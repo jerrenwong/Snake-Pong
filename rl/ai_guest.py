@@ -30,13 +30,26 @@ from .gym_env import _mirror_action, obs_dim
 ACTION_DELTAS = [(0, -1), (0, 1), (-1, 0), (1, 0)]  # up, down, left, right
 
 
-def _build_obs_from_state(state: dict, as_player: int, target_len: int) -> np.ndarray:
+def _build_obs_from_state(
+    state: dict,
+    as_player: int,
+    target_len: int,
+    interp_ball: bool = False,
+    phase: int = 0,
+    mult: int = 1,
+) -> np.ndarray:
     """Build the same flat vector obs as `rl/gym_env.py::_build_obs`, but
     from the raw JS-shaped state dict sent over the wire.
 
-    `target_len` is the snake length the model was trained on. If the live
-    game uses a different length, we truncate (keep head-first) or pad with
-    the tail segment to match.
+    Args:
+        target_len: snake length the model was trained on. If the live
+            game uses a different length, we truncate (keep head-first) or
+            pad with the tail segment to match.
+        interp_ball: if True, apply phase-interpolated ball position and
+            scale velocity by 1/mult (matches training-time obs for
+            checkpoints trained with --interp-ball-obs).
+        phase: substep phase ∈ [0, mult); 0 = ball just moved.
+        mult: snake_multiplier.
     """
     mirror = as_player == 2
     own = state["s2" if as_player == 2 else "s1"]
@@ -44,7 +57,6 @@ def _build_obs_from_state(state: dict, as_player: int, target_len: int) -> np.nd
     nx, ny = COLS - 1, ROWS - 1
 
     def encode_body(body):
-        # Normalise length to target_len.
         if len(body) >= target_len:
             body = body[:target_len]
         else:
@@ -60,10 +72,20 @@ def _build_obs_from_state(state: dict, as_player: int, target_len: int) -> np.nd
     own_body = encode_body(own["body"])
     opp_body = encode_body(opp["body"])
     ball = state["ball"]
-    bx = (nx - ball["x"]) if mirror else ball["x"]
-    vx = -ball["vx"] if mirror else ball["vx"]
+
+    bx_f, by_f = float(ball["x"]), float(ball["y"])
+    vx_f, vy_f = float(ball["vx"]), float(ball["vy"])
+    if interp_ball and mult > 1:
+        frac = phase / mult
+        bx_f = bx_f + frac * vx_f
+        by_f = by_f + frac * vy_f
+        vx_f = vx_f / mult
+        vy_f = vy_f / mult
+
+    bx_out = (nx - bx_f) if mirror else bx_f
+    vx_out = -vx_f if mirror else vx_f
     out_ball = np.array(
-        [bx / nx, ball["y"] / ny, float(vx), float(ball["vy"])],
+        [bx_out / nx, by_f / ny, vx_out, vy_f],
         dtype=np.float32,
     )
     return np.concatenate([own_body, opp_body, out_ball], axis=0)

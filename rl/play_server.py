@@ -43,6 +43,10 @@ class GameRoom:
         self.code = code
         self.host_ws: web.WebSocketResponse | None = None
         self.last_sent_input: tuple[int, int] | None = None
+        # Phase tracking: last ball (x, y) seen; if unchanged at next tick,
+        # phase increments; on change, resets to 0.
+        self.last_ball_xy: tuple[int, int] | None = None
+        self.phase: int = 0
 
 
 def gen_code(existing: set[str]) -> str:
@@ -156,9 +160,24 @@ async def handle_state(
     spec = _pick_model(model_specs, actual_len, actual_mult)
     q_net = spec["model"]
 
-    obs = _build_obs_from_state(payload, as_player=2, target_len=spec["length"])
+    # Phase tracking: detect if the ball moved since the last state message.
+    ball = payload["ball"]
+    xy = (ball["x"], ball["y"])
+    if room.last_ball_xy is None or xy != room.last_ball_xy:
+        room.phase = 0
+    else:
+        room.phase = min(room.phase + 1, max(1, actual_mult) - 1)
+    room.last_ball_xy = xy
+
+    obs = _build_obs_from_state(
+        payload, as_player=2, target_len=spec["length"],
+        interp_ball=spec["interp_ball"], phase=room.phase, mult=actual_mult,
+    )
     with torch.no_grad():
         q_vals = q_net(torch.from_numpy(obs).unsqueeze(0).to(device))
+        # Bootstrapped nets output (1, K, A) — mean over heads.
+        if q_vals.dim() == 3:
+            q_vals = q_vals.mean(dim=1)
         action = int(q_vals.argmax(dim=1).item())
     real_action = _mirror_action(action)
     dx, dy = ACTION_DELTAS[real_action]
@@ -172,9 +191,9 @@ async def handle_state(
             "payload": {"type": "input", "dx": dx, "dy": dy},
         })
         if verbose:
-            print(f"[ai] game(len={actual_len},mult={actual_mult}) "
-                  f"→ model({spec['label']}: len={spec['length']},mult={spec['mult']}) "
-                  f"action={action} dx={dx} dy={dy}")
+            print(f"[ai] game(len={actual_len},mult={actual_mult},phase={room.phase}) "
+                  f"→ model({spec['label']}: len={spec['length']},mult={spec['mult']},"
+                  f"interp={spec['interp_ball']}) action={action} dx={dx} dy={dy}")
 
 
 def main() -> None:
@@ -191,15 +210,16 @@ def main() -> None:
     device = torch.device(args.device)
     model_specs: list[dict] = []
     for ckpt_path in args.checkpoint:
-        q_net, trained_len, trained_mult, _interp = _load_q(ckpt_path, device)
+        q_net, trained_len, trained_mult, interp_ball = _load_q(ckpt_path, device)
         model_specs.append({
             "path": ckpt_path,
             "label": ckpt_path,
             "length": trained_len,
             "mult": trained_mult,
+            "interp_ball": interp_ball,
             "model": q_net,
         })
-        print(f"[server] loaded {ckpt_path} → length={trained_len} mult={trained_mult}")
+        print(f"[server] loaded {ckpt_path} → length={trained_len} mult={trained_mult} interp_ball={interp_ball}")
 
     app = web.Application()
     app["rooms"] = {}
