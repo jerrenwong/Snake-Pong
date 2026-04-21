@@ -80,6 +80,8 @@ class Transition:
 
 
 class ReplayBuffer:
+    """CPU-backed numpy replay buffer (paired with the numpy VecRollout)."""
+
     def __init__(self, capacity: int, obs_dim: int):
         self.capacity = capacity
         self.size = 0
@@ -111,18 +113,71 @@ class ReplayBuffer:
         }
 
 
+class GpuReplayBuffer:
+    """GPU-resident replay buffer. Tensors live on `device`; push/sample
+    never round-trip to CPU. Designed to pair with VecRolloutGPU.
+    """
+
+    def __init__(self, capacity: int, obs_dim: int, device: torch.device):
+        self.capacity = capacity
+        self.size = 0
+        self.idx = 0
+        self.device = device
+        self.obs = torch.zeros((capacity, obs_dim), dtype=torch.float32, device=device)
+        self.action = torch.zeros((capacity,), dtype=torch.int64, device=device)
+        self.reward = torch.zeros((capacity,), dtype=torch.float32, device=device)
+        self.next_obs = torch.zeros((capacity, obs_dim), dtype=torch.float32, device=device)
+        self.done = torch.zeros((capacity,), dtype=torch.float32, device=device)
+
+    def push_batch(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor,
+        reward: torch.Tensor,
+        next_obs: torch.Tensor,
+        done: torch.Tensor,
+    ) -> None:
+        """Batched insert of B transitions. All tensors must be on self.device."""
+        b = obs.shape[0]
+        # Ring buffer write: may wrap.
+        positions = (torch.arange(b, device=self.device) + self.idx) % self.capacity
+        self.obs[positions] = obs
+        self.action[positions] = action.to(torch.int64)
+        self.reward[positions] = reward.to(torch.float32)
+        self.next_obs[positions] = next_obs
+        self.done[positions] = done.to(torch.float32)
+        self.idx = int((self.idx + b) % self.capacity)
+        self.size = min(self.size + b, self.capacity)
+
+    def sample(self, batch_size: int, generator: torch.Generator):
+        idx = torch.randint(0, self.size, (batch_size,), generator=generator, device=self.device)
+        return {
+            "obs": self.obs[idx],
+            "action": self.action[idx],
+            "reward": self.reward[idx],
+            "next_obs": self.next_obs[idx],
+            "done": self.done[idx],
+        }
+
+
+def _to_dev(x, device: torch.device) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return x if x.device == device else x.to(device)
+    return torch.from_numpy(x).to(device)
+
+
 def compute_loss(
-    q_net: QNetwork,
-    target_net: QNetwork,
+    q_net: nn.Module,
+    target_net: nn.Module,
     batch: dict,
     gamma: float,
     device: torch.device,
 ) -> torch.Tensor:
-    obs = torch.from_numpy(batch["obs"]).to(device)
-    action = torch.from_numpy(batch["action"]).to(device)
-    reward = torch.from_numpy(batch["reward"]).to(device)
-    next_obs = torch.from_numpy(batch["next_obs"]).to(device)
-    done = torch.from_numpy(batch["done"]).to(device)
+    obs = _to_dev(batch["obs"], device)
+    action = _to_dev(batch["action"], device)
+    reward = _to_dev(batch["reward"], device)
+    next_obs = _to_dev(batch["next_obs"], device)
+    done = _to_dev(batch["done"], device)
 
     q = q_net(obs).gather(1, action.unsqueeze(1)).squeeze(1)
     with torch.no_grad():

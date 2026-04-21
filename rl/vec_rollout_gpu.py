@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .dqn import N_ACTIONS, ReplayBuffer, Transition
+from .dqn import N_ACTIONS, GpuReplayBuffer, ReplayBuffer, Transition
 from .env import COLS, ROWS
 from .env_torch import TorchVectorSnakePongGame
 
@@ -160,7 +160,7 @@ class VecRolloutGPU:
 
     def collect(
         self,
-        replay: ReplayBuffer,
+        replay,  # ReplayBuffer (numpy) or GpuReplayBuffer (torch)
         n_transitions: int,
         epsilon: float,
     ) -> list[dict]:
@@ -168,6 +168,7 @@ class VecRolloutGPU:
         collected = 0
         n = self.n_envs
         mirror_t = _mirror_action_tensor(self.device)
+        gpu_buffer = isinstance(replay, GpuReplayBuffer)
 
         while collected < n_transitions:
             learner_obs = _build_obs_batch_gpu(self.vec, self.learner_sides, self.interp_ball)
@@ -186,7 +187,6 @@ class VecRolloutGPU:
                 self.q_net, learner_obs, epsilon, self._gen,
             )
 
-            # Map egocentric → real-board actions (mirror for side 2)
             learner_real = torch.where(
                 self.learner_sides == 1, learner_actions_ego,
                 mirror_t[learner_actions_ego],
@@ -214,20 +214,26 @@ class VecRolloutGPU:
 
             next_obs = _build_obs_batch_gpu(self.vec, self.learner_sides, self.interp_ball)
 
-            # Copy batch to CPU and push to replay
-            lo_cpu = learner_obs.cpu().numpy()
-            la_cpu = learner_actions_ego.cpu().numpy()
-            rw_cpu = rewards.cpu().numpy()
-            no_cpu = next_obs.cpu().numpy()
-            done_cpu = terminated.cpu().numpy()
-            for i in range(n):
-                replay.push(Transition(
-                    obs=lo_cpu[i], action=int(la_cpu[i]), reward=float(rw_cpu[i]),
-                    next_obs=no_cpu[i], done=bool(done_cpu[i]),
-                ))
+            # Push to replay. GPU buffer: stay on device. CPU buffer: copy once.
+            if gpu_buffer:
+                replay.push_batch(
+                    obs=learner_obs, action=learner_actions_ego,
+                    reward=rewards, next_obs=next_obs, done=terminated,
+                )
+            else:
+                lo_cpu = learner_obs.cpu().numpy()
+                la_cpu = learner_actions_ego.cpu().numpy()
+                rw_cpu = rewards.cpu().numpy()
+                no_cpu = next_obs.cpu().numpy()
+                done_cpu = terminated.cpu().numpy()
+                for i in range(n):
+                    replay.push(Transition(
+                        obs=lo_cpu[i], action=int(la_cpu[i]), reward=float(rw_cpu[i]),
+                        next_obs=no_cpu[i], done=bool(done_cpu[i]),
+                    ))
             collected += n
 
-            # Episode bookkeeping
+            # Episode bookkeeping — needs CPU-side info for logging only.
             reset_mask = terminated | truncated
             if reset_mask.any():
                 idxs = reset_mask.nonzero(as_tuple=False).squeeze(1).cpu().numpy()

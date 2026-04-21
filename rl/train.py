@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .dqn import build_q_net, ReplayBuffer, compute_loss, greedy_action
+from .dqn import build_q_net, GpuReplayBuffer, ReplayBuffer, compute_loss, greedy_action
 from .gym_env import obs_dim
 from .eval import evaluate
 from .render import record_episode
@@ -137,7 +137,8 @@ def train(cfg: argparse.Namespace) -> None:
     )
     benchmarks = BenchmarkSet(device, total_iters=cfg.iters, rng=rng)
 
-    rollout_cls = VecRolloutGPU if cfg.rollout_device == "cuda" and device.type == "cuda" else VecRollout
+    use_gpu_rollout = (cfg.rollout_device == "cuda" and device.type == "cuda")
+    rollout_cls = VecRolloutGPU if use_gpu_rollout else VecRollout
     vec = rollout_cls(
         n_envs=cfg.n_envs, q_net=q_net, device=device,
         snake_length=cfg.snake_length, snake_multiplier=cfg.snake_multiplier,
@@ -146,7 +147,14 @@ def train(cfg: argparse.Namespace) -> None:
     )
     print(f"[rollout] using {rollout_cls.__name__} on {device}")
 
-    replay = ReplayBuffer(cfg.replay_capacity, d_obs)
+    if use_gpu_rollout:
+        replay = GpuReplayBuffer(cfg.replay_capacity, d_obs, device)
+        replay_gen = torch.Generator(device=device)
+        replay_gen.manual_seed(int(rng.integers(1 << 31)))
+    else:
+        replay = ReplayBuffer(cfg.replay_capacity, d_obs)
+        replay_gen = None
+    print(f"[replay] {type(replay).__name__} capacity={cfg.replay_capacity}")
 
     win_hist = deque(maxlen=100)
     len_hist = deque(maxlen=100)
@@ -195,7 +203,10 @@ def train(cfg: argparse.Namespace) -> None:
         iter_q_max: list[float] = []
         if replay.size >= cfg.min_replay:
             for _ in range(cfg.grad_steps_per_iter):
-                batch = replay.sample(cfg.batch_size, rng)
+                if use_gpu_rollout:
+                    batch = replay.sample(cfg.batch_size, replay_gen)
+                else:
+                    batch = replay.sample(cfg.batch_size, rng)
                 loss = compute_loss(q_net, target_net, batch, cfg.gamma, device)
                 optimizer.zero_grad()
                 loss.backward()
@@ -204,7 +215,8 @@ def train(cfg: argparse.Namespace) -> None:
                 total_grad_steps += 1
                 iter_losses.append(float(loss.item()))
                 with torch.no_grad():
-                    obs_t = torch.from_numpy(batch["obs"]).to(device)
+                    ob = batch["obs"]
+                    obs_t = ob if isinstance(ob, torch.Tensor) else torch.from_numpy(ob).to(device)
                     q_all = q_net(obs_t)
                     iter_q_mean.append(float(q_all.mean().item()))
                     iter_q_max.append(float(q_all.max().item()))
