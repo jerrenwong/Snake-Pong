@@ -22,7 +22,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .dqn import build_q_net, GpuReplayBuffer, ReplayBuffer, compute_loss, greedy_action
+from .dqn import (
+    build_q_net, GpuReplayBuffer, ReplayBuffer,
+    compute_loss, compute_loss_bootstrapped, greedy_action,
+)
 from .gym_env import obs_dim
 from .eval import evaluate
 from .render import record_episode
@@ -98,8 +101,10 @@ def train(cfg: argparse.Namespace) -> None:
     run = _init_wandb(cfg)
 
     d_obs = obs_dim(cfg.snake_length)
-    q_net = build_q_net(cfg.model_arch, d_obs).to(device)
-    target_net = build_q_net(cfg.model_arch, d_obs).to(device)
+    # n_heads only used for arch='bootstrapped'
+    q_net = build_q_net(cfg.model_arch, d_obs, n_heads=cfg.n_heads).to(device)
+    target_net = build_q_net(cfg.model_arch, d_obs, n_heads=cfg.n_heads).to(device)
+    is_bootstrap = cfg.model_arch == "bootstrapped"
 
     # Optionally warm-start from a prior checkpoint (must match arch and obs dim).
     if cfg.init_checkpoint:
@@ -157,22 +162,28 @@ def train(cfg: argparse.Namespace) -> None:
 
     use_gpu_rollout = (cfg.rollout_device == "cuda" and device.type == "cuda")
     rollout_cls = VecRolloutGPU if use_gpu_rollout else VecRollout
-    vec = rollout_cls(
+    rollout_kwargs = dict(
         n_envs=cfg.n_envs, q_net=q_net, device=device,
         snake_length=cfg.snake_length, snake_multiplier=cfg.snake_multiplier,
         max_steps=cfg.max_steps, interp_ball=cfg.interp_ball_obs,
         rng=rng,
     )
-    print(f"[rollout] using {rollout_cls.__name__} on {device}")
+    if is_bootstrap:
+        rollout_kwargs["n_heads"] = cfg.n_heads
+        rollout_kwargs["bootstrap_mask_prob"] = cfg.bootstrap_mask_prob
+    vec = rollout_cls(**rollout_kwargs)
+    print(f"[rollout] using {rollout_cls.__name__} on {device}"
+          + (f" (bootstrap K={cfg.n_heads})" if is_bootstrap else ""))
 
+    buf_n_heads = cfg.n_heads if is_bootstrap else 0
     if use_gpu_rollout:
-        replay = GpuReplayBuffer(cfg.replay_capacity, d_obs, device)
+        replay = GpuReplayBuffer(cfg.replay_capacity, d_obs, device, n_heads=buf_n_heads)
         replay_gen = torch.Generator(device=device)
         replay_gen.manual_seed(int(rng.integers(1 << 31)))
     else:
-        replay = ReplayBuffer(cfg.replay_capacity, d_obs)
+        replay = ReplayBuffer(cfg.replay_capacity, d_obs, n_heads=buf_n_heads)
         replay_gen = None
-    print(f"[replay] {type(replay).__name__} capacity={cfg.replay_capacity}")
+    print(f"[replay] {type(replay).__name__} capacity={cfg.replay_capacity} n_heads={buf_n_heads}")
 
     win_hist = deque(maxlen=100)
     len_hist = deque(maxlen=100)
@@ -225,7 +236,10 @@ def train(cfg: argparse.Namespace) -> None:
                     batch = replay.sample(cfg.batch_size, replay_gen)
                 else:
                     batch = replay.sample(cfg.batch_size, rng)
-                loss = compute_loss(q_net, target_net, batch, cfg.gamma, device)
+                if is_bootstrap:
+                    loss = compute_loss_bootstrapped(q_net, target_net, batch, cfg.gamma, device)
+                else:
+                    loss = compute_loss(q_net, target_net, batch, cfg.gamma, device)
                 optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(q_net.parameters(), 10.0)
@@ -236,6 +250,9 @@ def train(cfg: argparse.Namespace) -> None:
                     ob = batch["obs"]
                     obs_t = ob if isinstance(ob, torch.Tensor) else torch.from_numpy(ob).to(device)
                     q_all = q_net(obs_t)
+                    # Bootstrapped nets return (B, K, A); reduce heads first.
+                    if q_all.dim() == 3:
+                        q_all = q_all.mean(dim=1)
                     iter_q_mean.append(float(q_all.mean().item()))
                     iter_q_max.append(float(q_all.max().item()))
                 if total_grad_steps % cfg.target_update_every == 0:
@@ -377,8 +394,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save-every", type=int, default=25)
     p.add_argument("--print-every", type=int, default=1)
     # DQN
-    p.add_argument("--model-arch", type=str, default="dueling", choices=["mlp", "dueling"],
-                   help="Q-network architecture. 'dueling' = Dueling DQN.")
+    p.add_argument("--model-arch", type=str, default="dueling", choices=["mlp", "dueling", "bootstrapped"],
+                   help="Q-network architecture. 'bootstrapped' = K-headed ensemble for diversity.")
+    p.add_argument("--n-heads", type=int, default=5,
+                   help="Number of Q-heads in Bootstrapped DQN.")
+    p.add_argument("--bootstrap-mask-prob", type=float, default=0.5,
+                   help="Per-head Bernoulli bootstrap mask probability.")
     p.add_argument("--compile-model", action="store_true",
                    help="Use torch.compile on q_net/target_net (kernel fusion; "
                         "modest speedup, 5-10s compile overhead).")

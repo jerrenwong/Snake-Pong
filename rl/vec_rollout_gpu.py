@@ -84,9 +84,19 @@ def _batched_q_actions_gpu(
     obs_batch: torch.Tensor,  # (N, D) on device
     epsilon: float,
     gen: torch.Generator,
+    active_heads: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Returns (N,) int64 action indices on device."""
+    """Returns (N,) int64 action indices on device.
+
+    If q_net outputs (N, K, A) (Bootstrapped DQN) and `active_heads` is
+    provided, gather per-env head; otherwise mean over heads.
+    """
     q = q_net(obs_batch)
+    if q.dim() == 3:
+        if active_heads is not None:
+            q = q.gather(1, active_heads.view(-1, 1, 1).expand(-1, 1, q.size(-1))).squeeze(1)
+        else:
+            q = q.mean(dim=1)
     actions = q.argmax(dim=1)
     if epsilon > 0.0:
         rand = torch.rand(obs_batch.shape[0], generator=gen, device=obs_batch.device)
@@ -113,6 +123,8 @@ class VecRolloutGPU:
         snake_multiplier: int = 1,
         max_steps: int = 500,
         interp_ball: bool = True,
+        n_heads: int = 0,
+        bootstrap_mask_prob: float = 0.5,
         rng: Optional[np.random.Generator] = None,
     ):
         self.n_envs = n_envs
@@ -122,6 +134,8 @@ class VecRolloutGPU:
         self.snake_multiplier = snake_multiplier
         self.max_steps = max_steps
         self.interp_ball = interp_ball
+        self.n_heads = n_heads
+        self.bootstrap_mask_prob = bootstrap_mask_prob
         self._np_rng = rng if rng is not None else np.random.default_rng()
 
         self._gen = torch.Generator(device=self.device)
@@ -136,6 +150,13 @@ class VecRolloutGPU:
         half_mask = torch.rand(n_envs, generator=self._gen, device=device) < 0.5
         self.learner_sides = torch.where(half_mask, 1, 2).to(torch.int64)
         self.ep_lengths = torch.zeros(n_envs, dtype=torch.int64, device=device)
+        # Bootstrapped DQN: per-env active head
+        if n_heads > 0:
+            self.active_heads = torch.randint(
+                0, n_heads, (n_envs,), generator=self._gen, device=device, dtype=torch.int64,
+            )
+        else:
+            self.active_heads = None  # type: ignore[assignment]
 
         self._opp_q: Optional[nn.Module] = None
         self._opp_is_random: bool = True
@@ -157,6 +178,10 @@ class VecRolloutGPU:
         ).to(torch.int64)
         self.learner_sides[mask] = new_sides
         self.ep_lengths[mask] = 0
+        if self.active_heads is not None and self.n_heads > 0:
+            self.active_heads[mask] = torch.randint(
+                0, self.n_heads, (k,), generator=self._gen, device=self.device, dtype=torch.int64,
+            )
 
     def collect(
         self,
@@ -185,6 +210,7 @@ class VecRolloutGPU:
 
             learner_actions_ego = _batched_q_actions_gpu(
                 self.q_net, learner_obs, epsilon, self._gen,
+                active_heads=self.active_heads,
             )
 
             learner_real = torch.where(
@@ -214,11 +240,18 @@ class VecRolloutGPU:
 
             next_obs = _build_obs_batch_gpu(self.vec, self.learner_sides, self.interp_ball)
 
+            # Bootstrapped: generate (N, K) mask per step for buffer.
+            mask_gpu: Optional[torch.Tensor] = None
+            if self.n_heads > 0:
+                rand = torch.rand(n, self.n_heads, generator=self._gen, device=self.device)
+                mask_gpu = (rand < self.bootstrap_mask_prob).to(torch.float32)
+
             # Push to replay. GPU buffer: stay on device. CPU buffer: copy once.
             if gpu_buffer:
                 replay.push_batch(
                     obs=learner_obs, action=learner_actions_ego,
                     reward=rewards, next_obs=next_obs, done=terminated,
+                    mask=mask_gpu,
                 )
             else:
                 lo_cpu = learner_obs.cpu().numpy()
@@ -226,10 +259,12 @@ class VecRolloutGPU:
                 rw_cpu = rewards.cpu().numpy()
                 no_cpu = next_obs.cpu().numpy()
                 done_cpu = terminated.cpu().numpy()
+                mk_cpu = mask_gpu.cpu().numpy() if mask_gpu is not None else None
                 for i in range(n):
                     replay.push(Transition(
                         obs=lo_cpu[i], action=int(la_cpu[i]), reward=float(rw_cpu[i]),
                         next_obs=no_cpu[i], done=bool(done_cpu[i]),
+                        mask=(mk_cpu[i] if mk_cpu is not None else None),
                     ))
             collected += n
 

@@ -125,20 +125,30 @@ class Transition:
     reward: float
     next_obs: np.ndarray
     done: bool            # terminal (not truncation)
+    mask: np.ndarray | None = None  # (K,) bool — Bootstrapped-DQN per-head mask. None for non-bootstrap.
 
 
 class ReplayBuffer:
-    """CPU-backed numpy replay buffer (paired with the numpy VecRollout)."""
+    """CPU-backed numpy replay buffer (paired with the numpy VecRollout).
 
-    def __init__(self, capacity: int, obs_dim: int):
+    If `n_heads > 0`, also stores a (K,) bootstrap mask per transition
+    for Bootstrapped DQN training.
+    """
+
+    def __init__(self, capacity: int, obs_dim: int, n_heads: int = 0):
         self.capacity = capacity
         self.size = 0
         self.idx = 0
+        self.n_heads = n_heads
         self.obs = np.zeros((capacity, obs_dim), dtype=np.float32)
         self.action = np.zeros((capacity,), dtype=np.int64)
         self.reward = np.zeros((capacity,), dtype=np.float32)
         self.next_obs = np.zeros((capacity, obs_dim), dtype=np.float32)
         self.done = np.zeros((capacity,), dtype=np.float32)
+        if n_heads > 0:
+            self.mask = np.zeros((capacity, n_heads), dtype=np.float32)
+        else:
+            self.mask = None
 
     def push(self, t: Transition) -> None:
         i = self.idx
@@ -147,35 +157,47 @@ class ReplayBuffer:
         self.reward[i] = t.reward
         self.next_obs[i] = t.next_obs
         self.done[i] = 1.0 if t.done else 0.0
+        if self.mask is not None and t.mask is not None:
+            self.mask[i] = t.mask
         self.idx = (self.idx + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size: int, rng: np.random.Generator):
         idx = rng.integers(0, self.size, size=batch_size)
-        return {
+        out = {
             "obs": self.obs[idx],
             "action": self.action[idx],
             "reward": self.reward[idx],
             "next_obs": self.next_obs[idx],
             "done": self.done[idx],
         }
+        if self.mask is not None:
+            out["mask"] = self.mask[idx]
+        return out
 
 
 class GpuReplayBuffer:
     """GPU-resident replay buffer. Tensors live on `device`; push/sample
     never round-trip to CPU. Designed to pair with VecRolloutGPU.
+
+    If `n_heads > 0`, also stores a (K,) bootstrap mask per transition.
     """
 
-    def __init__(self, capacity: int, obs_dim: int, device: torch.device):
+    def __init__(self, capacity: int, obs_dim: int, device: torch.device, n_heads: int = 0):
         self.capacity = capacity
         self.size = 0
         self.idx = 0
         self.device = device
+        self.n_heads = n_heads
         self.obs = torch.zeros((capacity, obs_dim), dtype=torch.float32, device=device)
         self.action = torch.zeros((capacity,), dtype=torch.int64, device=device)
         self.reward = torch.zeros((capacity,), dtype=torch.float32, device=device)
         self.next_obs = torch.zeros((capacity, obs_dim), dtype=torch.float32, device=device)
         self.done = torch.zeros((capacity,), dtype=torch.float32, device=device)
+        if n_heads > 0:
+            self.mask = torch.zeros((capacity, n_heads), dtype=torch.float32, device=device)
+        else:
+            self.mask = None
 
     def push_batch(
         self,
@@ -184,28 +206,33 @@ class GpuReplayBuffer:
         reward: torch.Tensor,
         next_obs: torch.Tensor,
         done: torch.Tensor,
+        mask: torch.Tensor | None = None,
     ) -> None:
         """Batched insert of B transitions. All tensors must be on self.device."""
         b = obs.shape[0]
-        # Ring buffer write: may wrap.
         positions = (torch.arange(b, device=self.device) + self.idx) % self.capacity
         self.obs[positions] = obs
         self.action[positions] = action.to(torch.int64)
         self.reward[positions] = reward.to(torch.float32)
         self.next_obs[positions] = next_obs
         self.done[positions] = done.to(torch.float32)
+        if self.mask is not None and mask is not None:
+            self.mask[positions] = mask.to(torch.float32)
         self.idx = int((self.idx + b) % self.capacity)
         self.size = min(self.size + b, self.capacity)
 
     def sample(self, batch_size: int, generator: torch.Generator):
         idx = torch.randint(0, self.size, (batch_size,), generator=generator, device=self.device)
-        return {
+        out = {
             "obs": self.obs[idx],
             "action": self.action[idx],
             "reward": self.reward[idx],
             "next_obs": self.next_obs[idx],
             "done": self.done[idx],
         }
+        if self.mask is not None:
+            out["mask"] = self.mask[idx]
+        return out
 
 
 def _to_dev(x, device: torch.device) -> torch.Tensor:
@@ -279,8 +306,11 @@ def obs_to_tensor(obs: np.ndarray, device: torch.device) -> torch.Tensor:
 
 
 @torch.no_grad()
-def greedy_action(q_net: QNetwork, obs: np.ndarray, device: torch.device) -> int:
+def greedy_action(q_net: nn.Module, obs: np.ndarray, device: torch.device) -> int:
     q = q_net(obs_to_tensor(obs, device))
+    # Bootstrapped: (1, K, A) → mean over heads
+    if q.dim() == 3:
+        q = q.mean(dim=1)
     return int(q.argmax(dim=1).item())
 
 

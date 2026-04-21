@@ -94,9 +94,21 @@ def _batched_q_actions(
     epsilon: float,
     device: torch.device,
     rng: np.random.Generator,
+    active_heads: np.ndarray | None = None,
 ) -> np.ndarray:
+    """One batched forward + per-env ε-greedy. Returns (N,) int64.
+
+    If `q_net` outputs (N, K, A) — Bootstrapped DQN — select each env's
+    head from `active_heads`. If `active_heads` is None we mean over heads.
+    """
     obs_t = torch.from_numpy(obs_batch).to(device)
     q = q_net(obs_t)
+    if q.dim() == 3:
+        if active_heads is not None:
+            head_t = torch.from_numpy(active_heads).to(device).long()
+            q = q.gather(1, head_t.view(-1, 1, 1).expand(-1, 1, q.size(-1))).squeeze(1)
+        else:
+            q = q.mean(dim=1)
     actions = q.argmax(dim=1).cpu().numpy()
     if epsilon > 0.0:
         mask = rng.random(len(obs_batch)) < epsilon
@@ -119,6 +131,8 @@ class VecRollout:
         snake_multiplier: int = 1,
         max_steps: int = 500,
         interp_ball: bool = True,
+        n_heads: int = 0,
+        bootstrap_mask_prob: float = 0.5,
         rng: Optional[np.random.Generator] = None,
     ):
         self.n_envs = n_envs
@@ -128,6 +142,8 @@ class VecRollout:
         self.snake_multiplier = snake_multiplier
         self.max_steps = max_steps
         self.interp_ball = interp_ball
+        self.n_heads = n_heads
+        self.bootstrap_mask_prob = bootstrap_mask_prob
         self._rng = rng if rng is not None else np.random.default_rng()
 
         self.vec = VectorSnakePongGame(
@@ -139,6 +155,12 @@ class VecRollout:
             self._rng.random(n_envs) < 0.5, 1, 2,
         ).astype(np.int64)
         self.ep_lengths = np.zeros(n_envs, dtype=np.int64)
+
+        # Bootstrapped DQN: each env has an active head for its current episode.
+        if n_heads > 0:
+            self.active_heads = self._rng.integers(0, n_heads, size=n_envs).astype(np.int64)
+        else:
+            self.active_heads = None  # type: ignore[assignment]
 
         self._opp_q: Optional[nn.Module] = None
         self._opp_is_random: bool = True
@@ -157,6 +179,9 @@ class VecRollout:
         k = int(mask.sum())
         self.learner_sides[mask] = np.where(self._rng.random(k) < 0.5, 1, 2)
         self.ep_lengths[mask] = 0
+        # Resample active head on episode end (Bootstrapped DQN).
+        if self.active_heads is not None and self.n_heads > 0:
+            self.active_heads[mask] = self._rng.integers(0, self.n_heads, size=k)
 
     def collect(
         self,
@@ -185,6 +210,7 @@ class VecRollout:
 
             learner_actions_ego = _batched_q_actions(
                 self.q_net, learner_obs, epsilon, self.device, self._rng,
+                active_heads=self.active_heads,
             )
 
             # Map egocentric actions → real-board actions (mirror if side 2).
@@ -220,6 +246,12 @@ class VecRollout:
             # obs as "next" and a non-terminal done flag (False).
             next_obs = _build_obs_batch(self.vec, self.learner_sides, self.interp_ball)
 
+            # Bootstrapped: generate one per-transition mask (K,) per env.
+            if self.n_heads > 0:
+                batch_masks = (self._rng.random((n, self.n_heads)) < self.bootstrap_mask_prob).astype(np.float32)
+            else:
+                batch_masks = None
+
             # Push transitions
             for i in range(n):
                 replay.push(Transition(
@@ -228,6 +260,7 @@ class VecRollout:
                     reward=float(rewards[i]),
                     next_obs=next_obs[i],
                     done=bool(terminated[i]),
+                    mask=batch_masks[i] if batch_masks is not None else None,
                 ))
             collected += n
 
