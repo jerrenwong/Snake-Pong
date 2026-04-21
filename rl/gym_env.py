@@ -58,8 +58,14 @@ def _encode_body(snake: Snake, mirror: bool) -> np.ndarray:
     return out
 
 
-def _build_obs(game: SnakePongGame, as_player: int) -> np.ndarray:
-    """Flat egocentric observation. `as_player` is 1 or 2."""
+def _build_obs(game: SnakePongGame, as_player: int, interp_ball: bool = True) -> np.ndarray:
+    """Flat egocentric observation. `as_player` is 1 or 2.
+
+    `interp_ball`: if True and snake_multiplier > 1, interpolate the ball
+    position between ball-ticks so the obs keeps changing each snake tick
+    (smooth continuous motion). Velocity is scaled to snake-tick units so
+    predicted `next_x ≈ x + vx` stays consistent.
+    """
     mirror = as_player == 2
     own = game.s1 if as_player == 1 else game.s2
     opp = game.s2 if as_player == 1 else game.s1
@@ -67,15 +73,26 @@ def _build_obs(game: SnakePongGame, as_player: int) -> np.ndarray:
     own_body = _encode_body(own, mirror)
     opp_body = _encode_body(opp, mirror)
 
-    bx = (COLS - 1 - game.ball.x) if mirror else game.ball.x
-    ball_vx = -game.ball.vx if mirror else game.ball.vx
-    ball = np.array([
-        bx / (COLS - 1),
-        game.ball.y / (ROWS - 1),
-        float(ball_vx),
-        float(game.ball.vy),
-    ], dtype=np.float32)
+    nx, ny = COLS - 1, ROWS - 1
+    mult = game.snake_multiplier
+    phase = game.phase  # 0..mult-1
+    if interp_ball and mult > 1:
+        frac = phase / mult
+        bx_real = game.ball.x + frac * game.ball.vx
+        by_real = game.ball.y + frac * game.ball.vy
+        vx_obs = game.ball.vx / mult
+        vy_obs = game.ball.vy / mult
+    else:
+        bx_real = float(game.ball.x)
+        by_real = float(game.ball.y)
+        vx_obs = float(game.ball.vx)
+        vy_obs = float(game.ball.vy)
 
+    bx_out = (nx - bx_real) if mirror else bx_real
+    vx_out = -vx_obs if mirror else vx_obs
+    ball = np.array([
+        bx_out / nx, by_real / ny, float(vx_out), float(vy_obs),
+    ], dtype=np.float32)
     return np.concatenate([own_body, opp_body, ball], axis=0)
 
 
@@ -102,6 +119,7 @@ class SnakePongSelfPlayEnv(gym.Env):
         snake_length: int = 4,
         snake_multiplier: int = 1,
         max_steps: int = 500,
+        interp_ball: bool = True,
         seed: Optional[int] = None,
     ):
         super().__init__()
@@ -110,6 +128,7 @@ class SnakePongSelfPlayEnv(gym.Env):
         self.snake_length = snake_length
         self.snake_multiplier = snake_multiplier
         self.max_steps = max_steps
+        self.interp_ball = interp_ball
         self._rng = np.random.default_rng(seed)
         self._game = SnakePongGame(
             snake_length=snake_length, snake_multiplier=snake_multiplier,
@@ -141,14 +160,14 @@ class SnakePongSelfPlayEnv(gym.Env):
             seed=int(self._rng.integers(1 << 31)),
         )
         self._last_stats = EpisodeStats()
-        obs = _build_obs(self._game, as_player=self._learner)
+        obs = _build_obs(self._game, as_player=self._learner, interp_ball=self.interp_ball)
         return obs, {"learner_side": self._learner}
 
     def step(self, action: int):
         real_a_learner = action if self._learner == 1 else _mirror_action(action)
 
         opp_side = 2 if self._learner == 1 else 1
-        opp_obs = _build_obs(self._game, as_player=opp_side)
+        opp_obs = _build_obs(self._game, as_player=opp_side, interp_ball=self.interp_ball)
         opp_action = int(self.opponent_policy(opp_obs))
         real_a_opp = opp_action if opp_side == 1 else _mirror_action(opp_action)
 
@@ -182,7 +201,7 @@ class SnakePongSelfPlayEnv(gym.Env):
             else:
                 self._last_stats.terminal = "scored"
 
-        obs = _build_obs(self._game, as_player=self._learner)
+        obs = _build_obs(self._game, as_player=self._learner, interp_ball=self.interp_ball)
         info: dict[str, Any] = {"learner_side": self._learner}
         if terminated or truncated:
             info["episode_stats"] = {

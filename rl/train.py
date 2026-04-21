@@ -99,6 +99,26 @@ def train(cfg: argparse.Namespace) -> None:
     d_obs = obs_dim(cfg.snake_length)
     q_net = build_q_net(cfg.model_arch, d_obs).to(device)
     target_net = build_q_net(cfg.model_arch, d_obs).to(device)
+
+    # Optionally warm-start from a prior checkpoint (must match arch and obs dim).
+    if cfg.init_checkpoint:
+        init_ckpt = torch.load(cfg.init_checkpoint, map_location=device)
+        init_state = init_ckpt["q_net"] if isinstance(init_ckpt, dict) and "q_net" in init_ckpt else init_ckpt
+        init_cfg = init_ckpt.get("config", {}) if isinstance(init_ckpt, dict) else {}
+        init_arch = init_cfg.get("model_arch", "mlp")
+        init_len = init_cfg.get("snake_length", 4)
+        if init_arch != cfg.model_arch:
+            raise ValueError(
+                f"--init-checkpoint arch {init_arch!r} != --model-arch {cfg.model_arch!r}."
+            )
+        if init_len != cfg.snake_length:
+            raise ValueError(
+                f"--init-checkpoint snake_length {init_len} != --snake-length {cfg.snake_length}."
+            )
+        q_net.load_state_dict(init_state)
+        print(f"[init] warm-started q_net from {cfg.init_checkpoint} "
+              f"(arch={init_arch}, snake_length={init_len})")
+
     target_net.load_state_dict(q_net.state_dict())
     target_net.eval()
     for p in target_net.parameters():
@@ -119,7 +139,8 @@ def train(cfg: argparse.Namespace) -> None:
     vec = VecRollout(
         n_envs=cfg.n_envs, q_net=q_net, device=device,
         snake_length=cfg.snake_length, snake_multiplier=cfg.snake_multiplier,
-        max_steps=cfg.max_steps, rng=rng,
+        max_steps=cfg.max_steps, interp_ball=cfg.interp_ball_obs,
+        rng=rng,
     )
 
     replay = ReplayBuffer(cfg.replay_capacity, d_obs)
@@ -227,7 +248,8 @@ def train(cfg: argparse.Namespace) -> None:
                 stats = evaluate(
                     q_net, opp, cfg.eval_episodes, device,
                     snake_length=cfg.snake_length, snake_multiplier=cfg.snake_multiplier,
-                    max_steps=cfg.max_steps, seed=int(rng.integers(1 << 31)),
+                    max_steps=cfg.max_steps, interp_ball=cfg.interp_ball_obs,
+                    seed=int(rng.integers(1 << 31)),
                 )
                 for k, v in stats.items():
                     metrics[f"eval/{name}/{k}"] = v
@@ -259,7 +281,8 @@ def train(cfg: argparse.Namespace) -> None:
                 frames, vinfo = record_episode(
                     action_fn, opp,
                     snake_length=cfg.snake_length, snake_multiplier=cfg.snake_multiplier,
-                    max_steps=cfg.max_steps, seed=int(rng.integers(1 << 31)),
+                    max_steps=cfg.max_steps, interp_ball=cfg.interp_ball_obs,
+                    seed=int(rng.integers(1 << 31)),
                 )
                 _log_video(run, frames, key=f"video/vs_{name}", step=iter_1based)
                 metrics[f"video/vs_{name}/won"] = 1.0 if vinfo["won"] else 0.0
@@ -326,7 +349,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--lr-decay-min-ratio", type=float, default=0.1,
                    help="CosineAnnealingLR decays LR to lr * this ratio over training.")
-    p.add_argument("--batch-size", type=int, default=512)
+    p.add_argument("--batch-size", type=int, default=2048)
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--replay-capacity", type=int, default=200_000)
     p.add_argument("--min-replay", type=int, default=5_000)
@@ -338,6 +361,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--snake-multiplier", type=int, default=1,
                    help="Snake ticks per ball tick; matches JS game's snakeMultiplier.")
     p.add_argument("--max-steps", type=int, default=500)
+    p.add_argument("--interp-ball-obs", action=argparse.BooleanOptionalAction, default=True,
+                   help="Interpolate ball position by substep phase in observations "
+                        "(avoids identical obs on consecutive snake ticks when mult>1).")
+    p.add_argument("--init-checkpoint", type=str, default=None,
+                   help="Load q_net weights from this checkpoint as warm-start "
+                        "(arch and snake_length must match).")
     # Self-play
     p.add_argument("--pool-size", type=int, default=30)
     p.add_argument("--opponent-random-prob", type=float, default=0.25)

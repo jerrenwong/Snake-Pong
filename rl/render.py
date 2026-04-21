@@ -67,6 +67,7 @@ def record_episode(
     snake_length: int = 4,
     snake_multiplier: int = 1,
     max_steps: int = 500,
+    interp_ball: bool = True,
     seed: Optional[int] = None,
     learner_side: int | str = "random",
 ) -> tuple[np.ndarray, dict]:
@@ -81,6 +82,7 @@ def record_episode(
         snake_length=snake_length,
         snake_multiplier=snake_multiplier,
         max_steps=max_steps,
+        interp_ball=interp_ball,
         seed=seed,
     )
     obs, reset_info = env.reset()
