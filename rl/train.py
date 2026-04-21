@@ -28,6 +28,7 @@ from .eval import evaluate
 from .render import record_episode
 from .selfplay import BenchmarkSet, OpponentPool
 from .vec_rollout import VecRollout
+from .vec_rollout_gpu import VecRolloutGPU
 
 
 def _greedy_fn_factory(q_net: QNetwork, device: torch.device):
@@ -136,12 +137,14 @@ def train(cfg: argparse.Namespace) -> None:
     )
     benchmarks = BenchmarkSet(device, total_iters=cfg.iters, rng=rng)
 
-    vec = VecRollout(
+    rollout_cls = VecRolloutGPU if cfg.rollout_device == "cuda" and device.type == "cuda" else VecRollout
+    vec = rollout_cls(
         n_envs=cfg.n_envs, q_net=q_net, device=device,
         snake_length=cfg.snake_length, snake_multiplier=cfg.snake_multiplier,
         max_steps=cfg.max_steps, interp_ball=cfg.interp_ball_obs,
         rng=rng,
     )
+    print(f"[rollout] using {rollout_cls.__name__} on {device}")
 
     replay = ReplayBuffer(cfg.replay_capacity, d_obs)
 
@@ -387,6 +390,10 @@ def parse_args() -> argparse.Namespace:
     # Misc
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--rollout-device", type=str, default="cuda",
+                   choices=["cuda", "cpu"],
+                   help="Device for env sim during rollouts. 'cuda' keeps state on GPU, "
+                        "avoiding CPU↔GPU transfers. Ignored if --device=cpu.")
     p.add_argument("--out-dir", type=str, default="rl/runs/default")
     return p.parse_args()
 
