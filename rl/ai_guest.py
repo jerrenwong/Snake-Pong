@@ -70,29 +70,33 @@ def _build_obs_from_state(state: dict, as_player: int, target_len: int) -> np.nd
 
 
 def _load_q(checkpoint: str, device: torch.device):
-    """Returns (q_net, snake_length_trained).
+    """Returns (q_net, snake_length_trained, snake_multiplier_trained, interp_ball).
 
-    Picks the architecture from the saved config (defaults to 'mlp' for old
-    checkpoints that predate --model-arch).
+    Reads saved config for arch / length / multiplier / obs-format. Defaults
+    match the old pre-config behavior so v3-era checkpoints still load.
     """
     ckpt = torch.load(checkpoint, map_location=device)
     if isinstance(ckpt, dict) and "q_net" in ckpt:
         state = ckpt["q_net"]
         cfg = ckpt.get("config", {}) or {}
         snake_length = cfg.get("snake_length", 4)
+        snake_multiplier = cfg.get("snake_multiplier", 1)
         arch = cfg.get("model_arch", "mlp")
+        interp_ball = cfg.get("interp_ball_obs", False)
     else:
         state = ckpt
         snake_length = 4
+        snake_multiplier = 1
         arch = "mlp"
+        interp_ball = False
     q = build_q_net(arch, obs_dim(snake_length)).to(device).eval()
     q.load_state_dict(state)
-    return q, snake_length
+    return q, snake_length, snake_multiplier, interp_ball
 
 
 async def run(url: str, code: str, checkpoint: str, device_str: str, verbose: bool) -> None:
     device = torch.device(device_str)
-    q, target_len = _load_q(checkpoint, device)
+    q, target_len, _target_mult, _interp = _load_q(checkpoint, device)
     last_sent: tuple[int, int] | None = None
 
     print(f"[ai_guest] loading model OK. connecting to {url} as guest in room {code}…")

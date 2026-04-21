@@ -69,7 +69,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
     app = request.app
     rooms: dict[str, GameRoom] = app["rooms"]
-    models: dict[int, torch.nn.Module] = app["models"]
+    model_specs: list[dict] = app["model_specs"]
     device: torch.device = app["device"]
     verbose: bool = app["verbose"]
     room: GameRoom | None = None
@@ -103,7 +103,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 continue
             payload = data.get("payload") or {}
             if payload.get("type") == "state":
-                await handle_state(room, payload, models, device, verbose)
+                await handle_state(room, payload, model_specs, device, verbose)
             elif payload.get("type") in ("pause", "resume"):
                 # No-op for AI — nothing to pause on guest side.
                 pass
@@ -115,20 +115,34 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
-def _pick_model(models: dict[int, torch.nn.Module], actual_len: int) -> tuple[torch.nn.Module, int]:
-    """Pick the model whose trained snake length is closest to the actual
-    in-game snake length. Returns (q_net, trained_len)."""
-    if actual_len in models:
-        return models[actual_len], actual_len
-    # Nearest trained length (prefer >= to avoid padding with tail).
-    best = min(models.keys(), key=lambda L: (abs(L - actual_len), -L))
-    return models[best], best
+def _pick_model(specs: list[dict], actual_len: int, actual_mult: int) -> dict:
+    """Pick the model spec whose (length, mult) best matches the live game.
+    Exact match preferred; otherwise nearest in L1 distance over (length, mult).
+    """
+    # Exact match
+    for s in specs:
+        if s["length"] == actual_len and s["mult"] == actual_mult:
+            return s
+    # Nearest by (|Δlen|, |Δmult|)
+    return min(
+        specs,
+        key=lambda s: (abs(s["length"] - actual_len), abs(s["mult"] - actual_mult)),
+    )
+
+
+def _infer_mult(payload: dict) -> int:
+    """snake_multiplier = ballTickMs / tickMs (rounded)."""
+    tick = payload.get("tickMs") or 0
+    ball = payload.get("ballTickMs") or 0
+    if tick <= 0:
+        return 1
+    return max(1, int(round(ball / tick)))
 
 
 async def handle_state(
     room: GameRoom,
     payload: dict,
-    models: dict[int, torch.nn.Module],
+    model_specs: list[dict],
     device: torch.device,
     verbose: bool,
 ) -> None:
@@ -138,9 +152,11 @@ async def handle_state(
         return
 
     actual_len = len(payload["s2"].get("body", []))
-    q_net, trained_len = _pick_model(models, actual_len)
+    actual_mult = _infer_mult(payload)
+    spec = _pick_model(model_specs, actual_len, actual_mult)
+    q_net = spec["model"]
 
-    obs = _build_obs_from_state(payload, as_player=2, target_len=trained_len)
+    obs = _build_obs_from_state(payload, as_player=2, target_len=spec["length"])
     with torch.no_grad():
         q_vals = q_net(torch.from_numpy(obs).unsqueeze(0).to(device))
         action = int(q_vals.argmax(dim=1).item())
@@ -156,7 +172,9 @@ async def handle_state(
             "payload": {"type": "input", "dx": dx, "dy": dy},
         })
         if verbose:
-            print(f"[ai] len={actual_len}→model-{trained_len}  action={action} dx={dx} dy={dy}")
+            print(f"[ai] game(len={actual_len},mult={actual_mult}) "
+                  f"→ model({spec['label']}: len={spec['length']},mult={spec['mult']}) "
+                  f"action={action} dx={dx} dy={dy}")
 
 
 def main() -> None:
@@ -171,18 +189,21 @@ def main() -> None:
     args = p.parse_args()
 
     device = torch.device(args.device)
-    models: dict[int, torch.nn.Module] = {}
+    model_specs: list[dict] = []
     for ckpt_path in args.checkpoint:
-        q_net, trained_len = _load_q(ckpt_path, device)
-        if trained_len in models:
-            print(f"[server] warning: duplicate model for length {trained_len}, keeping first ({ckpt_path} ignored)")
-            continue
-        models[trained_len] = q_net
-        print(f"[server] loaded {ckpt_path} → trained length {trained_len}")
+        q_net, trained_len, trained_mult, _interp = _load_q(ckpt_path, device)
+        model_specs.append({
+            "path": ckpt_path,
+            "label": ckpt_path,
+            "length": trained_len,
+            "mult": trained_mult,
+            "model": q_net,
+        })
+        print(f"[server] loaded {ckpt_path} → length={trained_len} mult={trained_mult}")
 
     app = web.Application()
     app["rooms"] = {}
-    app["models"] = models
+    app["model_specs"] = model_specs
     app["device"] = device
     app["verbose"] = args.verbose
 
@@ -191,7 +212,10 @@ def main() -> None:
     app.router.add_get("/{path:.*}", serve_static)
 
     print(f"[server] serving Snake-Pong at http://{args.host}:{args.port}")
-    print(f"[server] models by length: {sorted(models.keys())}  device: {device}")
+    print(f"[server] loaded {len(model_specs)} model(s):")
+    for s in model_specs:
+        print(f"           length={s['length']} mult={s['mult']}  {s['path']}")
+    print(f"[server] device: {device}")
     print(f"[server] open the URL, click Online → Host; the AI joins automatically.")
     web.run_app(app, host=args.host, port=args.port, print=None)
 
