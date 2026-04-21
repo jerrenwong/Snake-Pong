@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import websockets
 
-from .dqn import QNetwork
+from .dqn import build_q_net
 from .env import COLS, ROWS
 from .gym_env import _mirror_action, obs_dim
 
@@ -69,16 +69,23 @@ def _build_obs_from_state(state: dict, as_player: int, target_len: int) -> np.nd
     return np.concatenate([own_body, opp_body, out_ball], axis=0)
 
 
-def _load_q(checkpoint: str, device: torch.device) -> tuple[QNetwork, int]:
-    """Returns (q_net, snake_length_trained)."""
+def _load_q(checkpoint: str, device: torch.device):
+    """Returns (q_net, snake_length_trained).
+
+    Picks the architecture from the saved config (defaults to 'mlp' for old
+    checkpoints that predate --model-arch).
+    """
     ckpt = torch.load(checkpoint, map_location=device)
     if isinstance(ckpt, dict) and "q_net" in ckpt:
         state = ckpt["q_net"]
-        snake_length = ckpt.get("config", {}).get("snake_length", 4)
+        cfg = ckpt.get("config", {}) or {}
+        snake_length = cfg.get("snake_length", 4)
+        arch = cfg.get("model_arch", "mlp")
     else:
         state = ckpt
         snake_length = 4
-    q = QNetwork(obs_dim(snake_length)).to(device).eval()
+        arch = "mlp"
+    q = build_q_net(arch, obs_dim(snake_length)).to(device).eval()
     q.load_state_dict(state)
     return q, snake_length
 

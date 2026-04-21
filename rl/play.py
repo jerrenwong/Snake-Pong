@@ -13,20 +13,23 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .dqn import QNetwork, greedy_action
+from .dqn import build_q_net, greedy_action
 from .gym_env import SnakePongSelfPlayEnv, obs_dim
 from .selfplay import make_policy, random_policy
 
 
-def load_q(checkpoint: str, device: torch.device) -> tuple[QNetwork, int]:
+def load_q(checkpoint: str, device: torch.device):
     ckpt = torch.load(checkpoint, map_location=device)
     if isinstance(ckpt, dict) and "q_net" in ckpt:
         state = ckpt["q_net"]
-        snake_length = ckpt.get("config", {}).get("snake_length", 4)
+        cfg = ckpt.get("config", {}) or {}
+        snake_length = cfg.get("snake_length", 4)
+        arch = cfg.get("model_arch", "mlp")
     else:
         state = ckpt
         snake_length = 4
-    q = QNetwork(obs_dim(snake_length)).to(device)
+        arch = "mlp"
+    q = build_q_net(arch, obs_dim(snake_length)).to(device)
     q.load_state_dict(state)
     q.eval()
     return q, snake_length

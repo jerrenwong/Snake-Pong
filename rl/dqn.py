@@ -16,7 +16,7 @@ N_ACTIONS = 4
 
 
 class QNetwork(nn.Module):
-    """MLP over the flat observation vector."""
+    """Plain MLP over the flat observation vector."""
 
     def __init__(self, obs_dim: int, n_actions: int = N_ACTIONS, hidden: int = 256):
         super().__init__()
@@ -29,6 +29,45 @@ class QNetwork(nn.Module):
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         return self.net(obs)
+
+
+class DuelingQNetwork(nn.Module):
+    """Dueling DQN: Q(s,a) = V(s) + A(s,a) - mean_a(A(s,·)).
+
+    Shared trunk; separate value (1-D) and advantage (n_actions-D) heads.
+    Output matches `QNetwork`'s (B, n_actions) shape, so it's a drop-in
+    replacement elsewhere.
+    """
+
+    def __init__(self, obs_dim: int, n_actions: int = N_ACTIONS, hidden: int = 256):
+        super().__init__()
+        self.trunk = nn.Sequential(
+            nn.Linear(obs_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+        )
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, 1),
+        )
+        self.adv_head = nn.Sequential(
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, n_actions),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        h = self.trunk(obs)
+        v = self.value_head(h)
+        a = self.adv_head(h)
+        return v + a - a.mean(dim=1, keepdim=True)
+
+
+def build_q_net(arch: str, obs_dim: int, n_actions: int = N_ACTIONS) -> nn.Module:
+    """Construct a Q-network by name. Use this everywhere to keep arch central."""
+    if arch == "mlp":
+        return QNetwork(obs_dim, n_actions)
+    if arch == "dueling":
+        return DuelingQNetwork(obs_dim, n_actions)
+    raise ValueError(f"Unknown model arch: {arch}")
 
 
 @dataclass

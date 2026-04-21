@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .dqn import QNetwork, ReplayBuffer, compute_loss, greedy_action
+from .dqn import build_q_net, ReplayBuffer, compute_loss, greedy_action
 from .gym_env import obs_dim
 from .eval import evaluate
 from .render import record_episode
@@ -97,8 +97,8 @@ def train(cfg: argparse.Namespace) -> None:
     run = _init_wandb(cfg)
 
     d_obs = obs_dim(cfg.snake_length)
-    q_net = QNetwork(d_obs).to(device)
-    target_net = QNetwork(d_obs).to(device)
+    q_net = build_q_net(cfg.model_arch, d_obs).to(device)
+    target_net = build_q_net(cfg.model_arch, d_obs).to(device)
     target_net.load_state_dict(q_net.state_dict())
     target_net.eval()
     for p in target_net.parameters():
@@ -285,7 +285,11 @@ def train(cfg: argparse.Namespace) -> None:
                 "config": vars(cfg),
                 "iter": iter_1based,
             }, ckpt_path)
-            torch.save(q_net.state_dict(), out_dir / "latest.pt")
+            torch.save({
+                "q_net": q_net.state_dict(),
+                "config": vars(cfg),
+                "iter": iter_1based,
+            }, out_dir / "latest.pt")
             aliases = ["latest"]
             if iter_1based == cfg.iters:
                 aliases.append("final")
@@ -317,6 +321,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save-every", type=int, default=25)
     p.add_argument("--print-every", type=int, default=1)
     # DQN
+    p.add_argument("--model-arch", type=str, default="dueling", choices=["mlp", "dueling"],
+                   help="Q-network architecture. 'dueling' = Dueling DQN.")
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--lr-decay-min-ratio", type=float, default=0.1,
                    help="CosineAnnealingLR decays LR to lr * this ratio over training.")
