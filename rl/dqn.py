@@ -61,12 +61,60 @@ class DuelingQNetwork(nn.Module):
         return v + a - a.mean(dim=1, keepdim=True)
 
 
-def build_q_net(arch: str, obs_dim: int, n_actions: int = N_ACTIONS) -> nn.Module:
+class BootstrappedQNetwork(nn.Module):
+    """Bootstrapped DQN: K parallel Q-heads sharing a trunk.
+
+    Forward returns (B, K, n_actions): per-head Q-values. During rollouts
+    pick a random head (or ensemble mean); during training each head only
+    updates on a random bootstrap-sampled subset of transitions.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        n_actions: int = N_ACTIONS,
+        hidden: int = 256,
+        n_heads: int = 5,
+    ):
+        super().__init__()
+        self.n_heads = n_heads
+        self.n_actions = n_actions
+        self.trunk = nn.Sequential(
+            nn.Linear(obs_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+        )
+        self.heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden, hidden), nn.ReLU(),
+                nn.Linear(hidden, n_actions),
+            )
+            for _ in range(n_heads)
+        ])
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """Returns (B, K, n_actions)."""
+        h = self.trunk(obs)
+        outs = torch.stack([head(h) for head in self.heads], dim=1)  # (B, K, A)
+        return outs
+
+    def mean_q(self, obs: torch.Tensor) -> torch.Tensor:
+        """Ensemble mean over heads → (B, n_actions)."""
+        return self.forward(obs).mean(dim=1)
+
+    def head_q(self, obs: torch.Tensor, head_idx: int) -> torch.Tensor:
+        """Single-head Q-values → (B, n_actions)."""
+        h = self.trunk(obs)
+        return self.heads[head_idx](h)
+
+
+def build_q_net(arch: str, obs_dim: int, n_actions: int = N_ACTIONS, n_heads: int = 5) -> nn.Module:
     """Construct a Q-network by name. Use this everywhere to keep arch central."""
     if arch == "mlp":
         return QNetwork(obs_dim, n_actions)
     if arch == "dueling":
         return DuelingQNetwork(obs_dim, n_actions)
+    if arch == "bootstrapped":
+        return BootstrappedQNetwork(obs_dim, n_actions, n_heads=n_heads)
     raise ValueError(f"Unknown model arch: {arch}")
 
 
@@ -164,6 +212,44 @@ def _to_dev(x, device: torch.device) -> torch.Tensor:
     if isinstance(x, torch.Tensor):
         return x if x.device == device else x.to(device)
     return torch.from_numpy(x).to(device)
+
+
+def compute_loss_bootstrapped(
+    q_net: "BootstrappedQNetwork",
+    target_net: "BootstrappedQNetwork",
+    batch: dict,
+    gamma: float,
+    device: torch.device,
+) -> torch.Tensor:
+    """Per-head masked Double-DQN loss.
+
+    batch must contain `mask` of shape (B, K): bool/float, True where a
+    given head should update on that transition. Without masks the heads
+    would converge — masks enforce bootstrap diversity.
+    """
+    obs = _to_dev(batch["obs"], device)
+    action = _to_dev(batch["action"], device)
+    reward = _to_dev(batch["reward"], device)
+    next_obs = _to_dev(batch["next_obs"], device)
+    done = _to_dev(batch["done"], device)
+    mask = _to_dev(batch["mask"], device).to(torch.float32)  # (B, K)
+
+    # All-heads Q for current obs: (B, K, A); gather on action dim
+    q_all = q_net(obs)  # (B, K, A)
+    q = q_all.gather(2, action.view(-1, 1, 1).expand(-1, q_all.size(1), 1)).squeeze(-1)  # (B, K)
+
+    with torch.no_grad():
+        # Double-DQN per head: online picks action, target evaluates
+        next_q_online = q_net(next_obs)  # (B, K, A)
+        next_a = next_q_online.argmax(dim=-1, keepdim=True)  # (B, K, 1)
+        next_q_target = target_net(next_obs).gather(2, next_a).squeeze(-1)  # (B, K)
+        target = reward.unsqueeze(-1) + gamma * (1.0 - done.unsqueeze(-1)) * next_q_target  # (B, K)
+
+    per_example = F.smooth_l1_loss(q, target, reduction="none")  # (B, K)
+    # Normalize per-head so each head gets equal weight regardless of mask mean
+    denom = mask.sum(dim=0).clamp(min=1.0)
+    loss = (per_example * mask).sum(dim=0) / denom  # (K,)
+    return loss.mean()
 
 
 def compute_loss(

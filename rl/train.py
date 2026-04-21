@@ -124,6 +124,24 @@ def train(cfg: argparse.Namespace) -> None:
     target_net.eval()
     for p in target_net.parameters():
         p.requires_grad_(False)
+
+    # Optional torch.compile for the online q_net (trunk + heads). Can give
+    # a modest speedup on MLPs via kernel fusion. Disabled by default
+    # because of 1-time compile latency and occasional instability.
+    if cfg.compile_model:
+        try:
+            q_net_compiled = torch.compile(q_net, mode="reduce-overhead")
+            target_net_compiled = torch.compile(target_net, mode="reduce-overhead")
+            # Warm up the compile cache once
+            dummy = torch.zeros(1, d_obs, device=device)
+            _ = q_net_compiled(dummy)
+            _ = target_net_compiled(dummy)
+            q_net = q_net_compiled
+            target_net = target_net_compiled
+            print("[compile] torch.compile applied (reduce-overhead mode).")
+        except Exception as e:
+            print(f"[compile] torch.compile failed ({e}); falling back to eager.")
+
     optimizer = torch.optim.Adam(q_net.parameters(), lr=cfg.lr)
     # Cosine LR decay to `lr * lr_decay_min_ratio` over the full run.
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -361,6 +379,9 @@ def parse_args() -> argparse.Namespace:
     # DQN
     p.add_argument("--model-arch", type=str, default="dueling", choices=["mlp", "dueling"],
                    help="Q-network architecture. 'dueling' = Dueling DQN.")
+    p.add_argument("--compile-model", action="store_true",
+                   help="Use torch.compile on q_net/target_net (kernel fusion; "
+                        "modest speedup, 5-10s compile overhead).")
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--lr-decay-min-ratio", type=float, default=0.1,
                    help="CosineAnnealingLR decays LR to lr * this ratio over training.")
