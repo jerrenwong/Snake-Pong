@@ -100,6 +100,7 @@ class SnakePongSelfPlayEnv(gym.Env):
         opponent_policy: Optional[OpponentPolicy] = None,
         learner_side: Literal[1, 2, "random"] = "random",
         snake_length: int = 4,
+        snake_multiplier: int = 1,
         max_steps: int = 500,
         seed: Optional[int] = None,
     ):
@@ -107,9 +108,13 @@ class SnakePongSelfPlayEnv(gym.Env):
         self.opponent_policy = opponent_policy if opponent_policy is not None else random_opponent
         self.learner_side_arg = learner_side
         self.snake_length = snake_length
+        self.snake_multiplier = snake_multiplier
         self.max_steps = max_steps
         self._rng = np.random.default_rng(seed)
-        self._game = SnakePongGame(snake_length=snake_length, seed=int(self._rng.integers(1 << 31)))
+        self._game = SnakePongGame(
+            snake_length=snake_length, snake_multiplier=snake_multiplier,
+            seed=int(self._rng.integers(1 << 31)),
+        )
         self._learner: int = 1
 
         self.action_space = spaces.Discrete(4)
@@ -132,6 +137,7 @@ class SnakePongSelfPlayEnv(gym.Env):
         self._learner = self._pick_side()
         self._game = SnakePongGame(
             snake_length=self.snake_length,
+            snake_multiplier=self.snake_multiplier,
             seed=int(self._rng.integers(1 << 31)),
         )
         self._last_stats = EpisodeStats()

@@ -21,12 +21,14 @@ def evaluate(
     n_episodes: int,
     device: torch.device,
     snake_length: int = 4,
+    snake_multiplier: int = 1,
     max_steps: int = 500,
     seed: Optional[int] = None,
 ) -> dict[str, float]:
     env = SnakePongSelfPlayEnv(
         opponent_policy=opponent_policy,
         snake_length=snake_length,
+        snake_multiplier=snake_multiplier,
         max_steps=max_steps,
         seed=seed,
     )

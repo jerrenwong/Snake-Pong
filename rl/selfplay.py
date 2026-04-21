@@ -122,6 +122,16 @@ class OpponentPool:
         idx = int(self._rng.integers(0, len(pool)))
         return make_policy(pool[idx], self.device, self.opponent_epsilon, self._rng)
 
+    def sample_snapshot(self) -> tuple[Optional[QNetwork], float]:
+        """Variant used by vectorized rollout: returns (q_net_or_None, epsilon).
+        q_net=None means uniform-random opponent.
+        """
+        pool = self._all_snapshots()
+        if not pool or self._rng.random() < self.random_prob:
+            return None, 0.0
+        idx = int(self._rng.integers(0, len(pool)))
+        return pool[idx], self.opponent_epsilon
+
     def __len__(self) -> int:
         return len(self._all_snapshots())
 

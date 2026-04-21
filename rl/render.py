@@ -65,6 +65,7 @@ def record_episode(
     learner_action_fn: Callable[[np.ndarray], int],
     opponent_policy: Callable[[np.ndarray], int],
     snake_length: int = 4,
+    snake_multiplier: int = 1,
     max_steps: int = 500,
     seed: Optional[int] = None,
     learner_side: int | str = "random",
@@ -78,6 +79,7 @@ def record_episode(
         opponent_policy=opponent_policy,
         learner_side=learner_side,
         snake_length=snake_length,
+        snake_multiplier=snake_multiplier,
         max_steps=max_steps,
         seed=seed,
     )

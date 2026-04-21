@@ -54,7 +54,7 @@ const { draw } = createRenderer(document.getElementById('game'));
 let phase  = 'menu'; // menu | playing | paused | roundend | gameover
 let score1 = 0, score2 = 0;
 let s1 = null, s2 = null, ball = null;
-let snakeMultiplier = 1;
+let snakeMultiplier = 2;
 
 // ── Power-up state ────────────────────────────────────────────────────────────
 let powerupsEnabled      = false;

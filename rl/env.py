@@ -78,10 +78,22 @@ def _make_ball(rng: np.random.Generator) -> Ball:
 
 
 class SnakePongGame:
-    """Two-player Snake-Pong sim. Both players step simultaneously each frame."""
+    """Two-player Snake-Pong sim. Both players step simultaneously each frame.
 
-    def __init__(self, snake_length: int = 4, seed: Optional[int] = None):
+    `snake_multiplier`: snake moves every env step, but the ball only moves
+    every `snake_multiplier`-th step. Matches the JS game's `snakeMultiplier`
+    setting (snake tick rate relative to ball tick rate).
+    """
+
+    def __init__(
+        self,
+        snake_length: int = 4,
+        snake_multiplier: int = 1,
+        seed: Optional[int] = None,
+    ):
+        assert snake_multiplier >= 1
         self.snake_length = snake_length
+        self.snake_multiplier = snake_multiplier
         self.rng = np.random.default_rng(seed)
         self.s1: Snake
         self.s2: Snake
@@ -204,7 +216,11 @@ class SnakePongGame:
             self.done = True
             return StepResult(scorer=1, s2_died=True)
 
-        scorer, bounced = self._step_ball()
+        # Ball moves every snake_multiplier-th env step (snakes move every step).
+        scorer: Optional[Literal[1, 2]] = None
+        bounced = False
+        if self.steps % self.snake_multiplier == 0:
+            scorer, bounced = self._step_ball()
         if scorer is not None:
             self.done = True
         return StepResult(scorer=scorer, ball_bounced=bounced)
