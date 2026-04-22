@@ -156,16 +156,22 @@ class BootstrappedDuelingQNetwork(nn.Module):
         return torch.stack(qs, dim=1)   # (B, K, A)
 
 
-def build_q_net(arch: str, obs_dim: int, n_actions: int = N_ACTIONS, n_heads: int = 5) -> nn.Module:
+def build_q_net(
+    arch: str,
+    obs_dim: int,
+    n_actions: int = N_ACTIONS,
+    n_heads: int = 5,
+    hidden: int = 256,
+) -> nn.Module:
     """Construct a Q-network by name. Use this everywhere to keep arch central."""
     if arch == "mlp":
-        return QNetwork(obs_dim, n_actions)
+        return QNetwork(obs_dim, n_actions, hidden=hidden)
     if arch == "dueling":
-        return DuelingQNetwork(obs_dim, n_actions)
+        return DuelingQNetwork(obs_dim, n_actions, hidden=hidden)
     if arch == "bootstrapped":
-        return BootstrappedQNetwork(obs_dim, n_actions, n_heads=n_heads)
+        return BootstrappedQNetwork(obs_dim, n_actions, n_heads=n_heads, hidden=hidden)
     if arch == "bootstrapped_dueling":
-        return BootstrappedDuelingQNetwork(obs_dim, n_actions, n_heads=n_heads)
+        return BootstrappedDuelingQNetwork(obs_dim, n_actions, n_heads=n_heads, hidden=hidden)
     raise ValueError(f"Unknown model arch: {arch}")
 
 

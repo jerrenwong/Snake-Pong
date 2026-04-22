@@ -204,8 +204,15 @@ class VecRollout:
                 opp_actions_ego = self._rng.integers(0, N_ACTIONS, size=n).astype(np.int64)
             else:
                 opp_obs = _build_obs_batch(self.vec, opp_sides, self.interp_ball)
+                # Head-vs-head: sample per-env opponent head when bootstrapped.
+                opp_K = getattr(self._opp_q, "n_heads", 1)
+                if opp_K and opp_K > 1:
+                    opp_heads = self._rng.integers(0, opp_K, size=n).astype(np.int64)
+                else:
+                    opp_heads = None
                 opp_actions_ego = _batched_q_actions(
                     self._opp_q, opp_obs, self._opp_epsilon, self.device, self._rng,
+                    active_heads=opp_heads,
                 )
 
             learner_actions_ego = _batched_q_actions(

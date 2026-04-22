@@ -29,7 +29,7 @@ from .dqn import (
 from .gym_env import obs_dim
 from .eval import evaluate
 from .render import record_episode
-from .selfplay import BenchmarkSet, OpponentPool
+from .selfplay import BenchmarkSet, OpponentPool, parse_benchmark_spec
 from .vec_rollout import VecRollout
 from .vec_rollout_gpu import VecRolloutGPU
 
@@ -101,29 +101,43 @@ def train(cfg: argparse.Namespace) -> None:
     run = _init_wandb(cfg)
 
     d_obs = obs_dim(cfg.snake_length)
-    # n_heads only used for arch='bootstrapped'
-    q_net = build_q_net(cfg.model_arch, d_obs, n_heads=cfg.n_heads).to(device)
-    target_net = build_q_net(cfg.model_arch, d_obs, n_heads=cfg.n_heads).to(device)
+    # n_heads only used for arch='bootstrapped*'; hidden applies to all.
+    q_net = build_q_net(cfg.model_arch, d_obs, n_heads=cfg.n_heads, hidden=cfg.hidden_size).to(device)
+    target_net = build_q_net(cfg.model_arch, d_obs, n_heads=cfg.n_heads, hidden=cfg.hidden_size).to(device)
+    n_params = sum(p.numel() for p in q_net.parameters())
+    print(f"[model] arch={cfg.model_arch} hidden={cfg.hidden_size} "
+          f"heads={cfg.n_heads if 'bootstrap' in cfg.model_arch else 1} params={n_params:,}")
     is_bootstrap = cfg.model_arch in ("bootstrapped", "bootstrapped_dueling")
 
-    # Optionally warm-start from a prior checkpoint (must match arch and obs dim).
+    # Optionally warm-start from a prior checkpoint. snake_length must match
+    # (obs-dim constraint), but arch may differ — unmatched keys (e.g.
+    # different head layouts) stay at random init.
     if cfg.init_checkpoint:
         init_ckpt = torch.load(cfg.init_checkpoint, map_location=device)
         init_state = init_ckpt["q_net"] if isinstance(init_ckpt, dict) and "q_net" in init_ckpt else init_ckpt
         init_cfg = init_ckpt.get("config", {}) if isinstance(init_ckpt, dict) else {}
         init_arch = init_cfg.get("model_arch", "mlp")
         init_len = init_cfg.get("snake_length", 4)
-        if init_arch != cfg.model_arch:
-            raise ValueError(
-                f"--init-checkpoint arch {init_arch!r} != --model-arch {cfg.model_arch!r}."
-            )
         if init_len != cfg.snake_length:
             raise ValueError(
                 f"--init-checkpoint snake_length {init_len} != --snake-length {cfg.snake_length}."
             )
-        q_net.load_state_dict(init_state)
-        print(f"[init] warm-started q_net from {cfg.init_checkpoint} "
-              f"(arch={init_arch}, snake_length={init_len})")
+        # Partial load: trunk layers with matching names/shapes transfer.
+        incompat = q_net.load_state_dict(init_state, strict=False)
+        model_keys = set(q_net.state_dict().keys())
+        ckpt_keys = set(init_state.keys())
+        matched = model_keys & ckpt_keys - set(incompat.missing_keys)
+        # Also exclude shape-mismatch keys (PyTorch lists those in missing_keys
+        # if they couldn't be loaded, so `matched` already excludes them.)
+        print(f"[init] warm-start from {cfg.init_checkpoint}")
+        print(f"[init]   donor arch={init_arch}, length={init_len}")
+        print(f"[init]   target arch={cfg.model_arch}, length={cfg.snake_length}")
+        print(f"[init]   matched keys: {len(matched)}/{len(model_keys)} "
+              f"(missing: {len(incompat.missing_keys)}, unexpected: {len(incompat.unexpected_keys)})")
+        if len(matched) == 0:
+            raise ValueError(
+                "--init-checkpoint matched 0 keys — architectures are fully incompatible."
+            )
 
     target_net.load_state_dict(q_net.state_dict())
     target_net.eval()
@@ -158,7 +172,18 @@ def train(cfg: argparse.Namespace) -> None:
         random_prob=cfg.opponent_random_prob,
         opponent_epsilon=cfg.opponent_epsilon, rng=rng,
     )
-    benchmarks = BenchmarkSet(device, total_iters=cfg.iters, rng=rng)
+    # Parse benchmark specs. Each is 'name:path[:head=N]'.
+    ext_specs = []
+    for spec in (cfg.benchmark or []):
+        ext_specs.append(parse_benchmark_spec(spec))
+    benchmarks = BenchmarkSet(
+        device, total_iters=cfg.iters, snake_length=cfg.snake_length, rng=rng,
+        include_random=cfg.include_random_benchmark,
+        external_checkpoints=ext_specs,
+        scripted_names=(cfg.scripted_benchmarks.split(",") if cfg.scripted_benchmarks else []),
+    )
+    stable = benchmarks.stable_names()
+    print(f"[bench] stable benchmarks (best-by-eval key): {stable}")
 
     use_gpu_rollout = (cfg.rollout_device == "cuda" and device.type == "cuda")
     rollout_cls = VecRolloutGPU if use_gpu_rollout else VecRollout
@@ -290,7 +315,7 @@ def train(cfg: argparse.Namespace) -> None:
         do_eval = (iter_1based % eval_every_now == 0) or (iter_1based == cfg.iters)
         metrics["train/lr"] = optimizer.param_groups[0]["lr"]
         if do_eval:
-            eval_win_rates: list[float] = []
+            stable_win_rates: list[float] = []
             for name in benchmarks.names():
                 opp = benchmarks.policy_for(name)
                 if opp is None:
@@ -303,11 +328,14 @@ def train(cfg: argparse.Namespace) -> None:
                 )
                 for k, v in stats.items():
                     metrics[f"eval/{name}/{k}"] = v
-                eval_win_rates.append(stats["win_rate"])
-            if eval_win_rates:
-                eval_avg = float(np.mean(eval_win_rates))
-                metrics["eval/avg_win_rate"] = eval_avg
-                # Best-by-eval checkpoint — protects against late-stage drift.
+                if name in benchmarks.stable_names():
+                    stable_win_rates.append(stats["win_rate"])
+            if stable_win_rates:
+                # Use only STABLE (scripted) benchmarks for best-by-eval. Their
+                # difficulty never changes so the score is monotone-comparable
+                # across training time.
+                eval_avg = float(np.mean(stable_win_rates))
+                metrics["eval/stable_avg_win_rate"] = eval_avg
                 if eval_avg > best_eval_avg:
                     best_eval_avg = eval_avg
                     best_eval_iter = iter_1based
@@ -317,7 +345,7 @@ def train(cfg: argparse.Namespace) -> None:
                         "iter": iter_1based,
                         "eval_avg": eval_avg,
                     }, out_dir / "best.pt")
-                metrics["eval/best_avg_so_far"] = best_eval_avg
+                metrics["eval/best_stable_avg_so_far"] = best_eval_avg
                 metrics["eval/best_iter_so_far"] = best_eval_iter
 
         # 7) Periodic video upload
@@ -399,6 +427,8 @@ def parse_args() -> argparse.Namespace:
                    help="Q-network architecture. 'bootstrapped_dueling' combines both.")
     p.add_argument("--n-heads", type=int, default=5,
                    help="Number of Q-heads in Bootstrapped DQN.")
+    p.add_argument("--hidden-size", type=int, default=256,
+                   help="Hidden dim for all layers. Use to match param counts across archs.")
     p.add_argument("--bootstrap-mask-prob", type=float, default=0.5,
                    help="Per-head Bernoulli bootstrap mask probability.")
     p.add_argument("--compile-model", action="store_true",
@@ -427,7 +457,17 @@ def parse_args() -> argparse.Namespace:
                         "(arch and snake_length must match).")
     # Self-play
     p.add_argument("--pool-size", type=int, default=30)
-    p.add_argument("--opponent-random-prob", type=float, default=0.25)
+    p.add_argument("--opponent-random-prob", type=float, default=0.0,
+                   help="Probability of sampling a uniform-random opponent during training "
+                        "rollouts. Default 0 — random isn't a useful opponent for this game.")
+    p.add_argument("--include-random-benchmark", action="store_true",
+                   help="Include 'random' in eval benchmarks (NOT used for best-by-eval selection).")
+    p.add_argument("--benchmark", action="append", default=[],
+                   help="External checkpoint benchmark. Repeatable. Format: "
+                        "name:path[:head=N]. Example: v5:rl/runs/v5/best.pt")
+    p.add_argument("--scripted-benchmarks", type=str, default="",
+                   help="Comma-separated scripted bot names (scripted_chase, "
+                        "scripted_defender, scripted_oscillator).")
     p.add_argument("--opponent-epsilon", type=float, default=0.05)
     # Evaluation
     p.add_argument("--eval-every", type=int, default=50)

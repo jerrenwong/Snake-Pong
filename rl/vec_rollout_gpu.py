@@ -204,8 +204,20 @@ class VecRolloutGPU:
                                                 device=self.device, dtype=torch.int64)
             else:
                 opp_obs = _build_obs_batch_gpu(self.vec, opp_sides, self.interp_ball)
+                # Head-vs-head: if opponent is bootstrapped (K>1 heads),
+                # sample a per-env random head so each env meets a different
+                # opponent style. Pool snapshots are frozen so this is safe.
+                opp_K = getattr(self._opp_q, "n_heads", 1)
+                if opp_K and opp_K > 1:
+                    opp_heads = torch.randint(
+                        0, opp_K, (n,), generator=self._gen,
+                        device=self.device, dtype=torch.int64,
+                    )
+                else:
+                    opp_heads = None
                 opp_actions_ego = _batched_q_actions_gpu(
                     self._opp_q, opp_obs, self._opp_epsilon, self._gen,
+                    active_heads=opp_heads,
                 )
 
             learner_actions_ego = _batched_q_actions_gpu(
