@@ -47,6 +47,8 @@ class GameRoom:
         # phase increments; on change, resets to 0.
         self.last_ball_xy: tuple[int, int] | None = None
         self.phase: int = 0
+        # Bootstrapped DQN: which head this room uses (fixed for room lifetime)
+        self.active_head: int | None = None
 
 
 def gen_code(existing: set[str]) -> str:
@@ -92,10 +94,27 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
             room = GameRoom(code)
             room.host_ws = ws
             rooms[code] = room
+            # If a bootstrapped model is loaded, assign a head per head-mode.
+            head_mode = request.app["head_mode"]
+            if head_mode == "random_per_room":
+                # Pick a random head from the first bootstrapped model we find
+                for spec in model_specs:
+                    m = spec["model"]
+                    k = getattr(m, "n_heads", None)
+                    if k is not None and k > 1:
+                        room.active_head = random.randrange(k)
+                        break
+            elif head_mode.startswith("fixed_"):
+                try:
+                    room.active_head = int(head_mode.split("_", 1)[1])
+                except Exception:
+                    room.active_head = 0
+            # "mean" mode leaves active_head = None (mean-reduce)
+
             await ws.send_json({"type": "hosted", "code": code})
-            # Immediately simulate the guest joining.
             await ws.send_json({"type": "guest_joined"})
-            print(f"[server] hosted room {code} — AI guest joined.")
+            print(f"[server] hosted room {code} — AI guest joined "
+                  f"(head_mode={head_mode}, active_head={room.active_head})")
 
         elif t == "join":
             # Shouldn't happen in this setup (the AI is the only guest).
@@ -175,9 +194,12 @@ async def handle_state(
     )
     with torch.no_grad():
         q_vals = q_net(torch.from_numpy(obs).unsqueeze(0).to(device))
-        # Bootstrapped nets output (1, K, A) — mean over heads.
+        # Bootstrapped nets output (1, K, A) — pick per room.active_head, else mean.
         if q_vals.dim() == 3:
-            q_vals = q_vals.mean(dim=1)
+            if room.active_head is not None and 0 <= room.active_head < q_vals.size(1):
+                q_vals = q_vals[:, room.active_head, :]
+            else:
+                q_vals = q_vals.mean(dim=1)
         action = int(q_vals.argmax(dim=1).item())
     real_action = _mirror_action(action)
     dx, dy = ACTION_DELTAS[real_action]
@@ -205,6 +227,10 @@ def main() -> None:
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--verbose", action="store_true")
+    p.add_argument("--head-mode", type=str, default="random_per_room",
+                   help="For Bootstrapped nets: 'mean' (avg all heads), "
+                        "'random_per_room' (random head per room, fixed for lifetime), "
+                        "or 'fixed_N' for a specific head index.")
     args = p.parse_args()
 
     device = torch.device(args.device)
@@ -224,6 +250,7 @@ def main() -> None:
     app = web.Application()
     app["rooms"] = {}
     app["model_specs"] = model_specs
+    app["head_mode"] = args.head_mode
     app["device"] = device
     app["verbose"] = args.verbose
 
