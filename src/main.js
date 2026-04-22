@@ -484,7 +484,12 @@ hostBtn.addEventListener('click', async () => {
     hostBtn.disabled = false;
     return;
   }
-  net.send({ type: 'host' });
+  // Read head selection (optional) and include in host message.
+  const headSel = document.getElementById('ai-head-sel');
+  const head = headSel ? parseInt(headSel.value) : undefined;
+  const msg = { type: 'host' };
+  if (Number.isInteger(head)) msg.head = head;
+  net.send(msg);
   net.on('hosted', ({ code }) => {
     roomCodeEl.textContent   = code;
     onlineStatus.textContent = 'Share this code. Waiting for opponent…';

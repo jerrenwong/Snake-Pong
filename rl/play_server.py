@@ -94,27 +94,38 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
             room = GameRoom(code)
             room.host_ws = ws
             rooms[code] = room
-            # If a bootstrapped model is loaded, assign a head per head-mode.
+            # Priority: explicit client-supplied head > server head_mode > None (mean).
+            client_head = data.get("head")
             head_mode = request.app["head_mode"]
-            if head_mode == "random_per_room":
-                # Pick a random head from the first bootstrapped model we find
-                for spec in model_specs:
-                    m = spec["model"]
-                    k = getattr(m, "n_heads", None)
-                    if k is not None and k > 1:
-                        room.active_head = random.randrange(k)
-                        break
-            elif head_mode.startswith("fixed_"):
+            source = None
+            if client_head is not None:
                 try:
-                    room.active_head = int(head_mode.split("_", 1)[1])
-                except Exception:
-                    room.active_head = 0
-            # "mean" mode leaves active_head = None (mean-reduce)
+                    room.active_head = int(client_head)
+                    source = f"client(head={room.active_head})"
+                except (ValueError, TypeError):
+                    pass
+            if room.active_head is None:
+                if head_mode == "random_per_room":
+                    for spec in model_specs:
+                        m = spec["model"]
+                        k = getattr(m, "n_heads", None)
+                        if k is not None and k > 1:
+                            room.active_head = random.randrange(k)
+                            source = f"random_per_room(head={room.active_head})"
+                            break
+                elif head_mode.startswith("fixed_"):
+                    try:
+                        room.active_head = int(head_mode.split("_", 1)[1])
+                        source = f"fixed(head={room.active_head})"
+                    except Exception:
+                        room.active_head = 0
+                        source = "fixed(default=0)"
+            if source is None:
+                source = "mean"
 
             await ws.send_json({"type": "hosted", "code": code})
             await ws.send_json({"type": "guest_joined"})
-            print(f"[server] hosted room {code} — AI guest joined "
-                  f"(head_mode={head_mode}, active_head={room.active_head})")
+            print(f"[server] hosted room {code} — AI guest joined ({source})")
 
         elif t == "join":
             # Shouldn't happen in this setup (the AI is the only guest).
