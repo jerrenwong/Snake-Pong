@@ -880,8 +880,8 @@ async function _loadAndPlayVariant(variant, btn) {
     try {
       aiLocal = new LocalAI();
       await aiLocal.load(
-        `/models/snake-pong-${aiVariant}.onnx`,
-        `/models/snake-pong-${aiVariant}.json`,
+        `models/snake-pong-${aiVariant}.onnx`,
+        `models/snake-pong-${aiVariant}.json`,
       );
       aiLoadedVariant = aiVariant;
     } catch (e) {
