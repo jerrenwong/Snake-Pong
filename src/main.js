@@ -10,7 +10,6 @@ import { POWERUP_DEFS, spawnPowerup,
          SPAWN_COOLDOWN_MS, SPAWN_EXPECTED_MS,
          FIELD_EXPIRE_MS }                                from './powerups.js';
 import { WALL_L, WALL_R }                                 from './constants.js';
-import { createNetwork }                                  from './network.js';
 import { LocalAI }                                        from './ai_local.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -27,7 +26,6 @@ const ovMsg      = document.getElementById('ov-msg');
 // button (text swaps to RESUME / PLAY AGAIN), so it's the canonical handle
 // for "the big action button at the bottom of the menu overlay".
 const localBtn   = document.getElementById('local-btn');
-const startBtn   = localBtn;  // backwards-compatible alias
 const p1Pts      = document.getElementById('p1-pts');
 const p2Pts      = document.getElementById('p2-pts');
 const settingsBtn   = document.getElementById('settings-btn');
@@ -36,16 +34,7 @@ const multGroup     = document.getElementById('mult-group');
 const puToggle      = document.getElementById('pu-toggle');
 const puLegend      = document.getElementById('powerup-legend');
 
-// Online UI refs
 const mainMenu     = document.getElementById('main-menu');
-const onlinePanel  = document.getElementById('online-panel');
-const onlineBtn    = document.getElementById('online-btn');
-const onlineBack   = document.getElementById('online-back');
-const onlineStatus = document.getElementById('online-status');
-const hostBtn      = document.getElementById('host-btn');
-const roomCodeEl   = document.getElementById('room-code');
-const joinCodeEl   = document.getElementById('join-code');
-const joinBtn      = document.getElementById('join-btn');
 const aiLocalBtn   = document.getElementById('ai-local-btn');
 const aiVariantGroup = document.getElementById('ai-variant-group');
 const aiBtn       = document.getElementById('ai-btn');
@@ -77,34 +66,20 @@ let nextSpawnAt1         = 0;
 let nextSpawnAt2         = 0;
 let _effectUid           = 0;
 
-// ── Online state ──────────────────────────────────────────────────────────────
-let onlineRole          = null;  // null | 'host' | 'guest'
-let net                 = null;
-let pendingSfx          = [];    // SFX events bundled into next state send
-let guestTickAccum      = 0;     // guest-local snake tick accumulator
-let guestBallAccum      = 0;     // guest-local ball tick accumulator
-let guestTickMs         = 400;   // snake tick interval from host
-let guestBallTickMs     = 200;   // ball tick interval from host
-
-// ── Local AI state (bypasses WebSocket; ONNX model plays P2) ──────────────────
-// Model was trained with snake_length=4, snake_multiplier=2. If the UI is set
-// differently we still feed the model — it tolerates length mismatch (pad/truncate)
-// but will degrade if snake_multiplier doesn't match training.
-let aiLocalMode      = false;    // true when "PLAY VS AI (LOCAL)" is active
-let aiLocal          = null;     // LocalAI instance (lazy-init)
+// ── Local AI state (ONNX model plays P2) ──────────────────────────────────────
+let aiLocalMode      = false;
+let aiLocal          = null;
 let aiLoading        = false;
-let aiInferring      = false;    // prevent overlapping inference calls
-let aiPendingDir     = null;     // latest {dx,dy} from AI — consumed on next tick
-let aiVariant        = 'hard';  // default tier; updated by ai-variant-btn
-let aiLoadedVariant  = null;     // which variant is currently loaded in aiLocal
+let aiInferring      = false;
+let aiPendingDir     = null;
+let aiVariant        = 'hard';
+let aiLoadedVariant  = null;
 // Boss tier — unlocked the first time the player beats INSANE. State is
 // persisted in localStorage so the unlock survives a reload. While
 // `bossModeActive` is true the score has no cap; play continues forever.
 let bossUnlocked     = (typeof localStorage !== 'undefined' &&
                         localStorage.getItem('snakepong_boss_unlocked') === '1');
 let bossModeActive   = false;
-
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 
 // ── RAF loop ──────────────────────────────────────────────────────────────────
 let rafId = null, lastTs = 0;
@@ -123,31 +98,6 @@ function loop(ts) {
   rafId = requestAnimationFrame(loop);
   const dt = Math.min(ts - lastTs, 150);
   lastTs = ts;
-
-  // ── Guest: local simulation between host state updates ───────────────────
-  if (onlineRole === 'guest') {
-    if (phase === 'playing' && s1 && s2 && ball) {
-      // Step snakes locally so they move smoothly between host updates
-      guestTickAccum += dt;
-      while (guestTickAccum >= guestTickMs) {
-        for (let i = 0; i < (s1.speedMult || 1); i++) stepSnake(s1);
-        for (let i = 0; i < (s2.speedMult || 1); i++) stepSnake(s2);
-        guestTickAccum -= guestTickMs;
-      }
-      // Step ball locally (ignore scoring — host is authoritative)
-      guestBallAccum += dt;
-      while (guestBallAccum >= guestBallTickMs) {
-        const scorer = stepBall(ball, s1, s2, null);
-        guestBallAccum -= guestBallTickMs;
-        if (scorer !== null) { guestBallAccum = 0; break; }
-      }
-    }
-    draw(s1, s2, ball,
-      powerupsEnabled ? powerupsOnField : [],
-      powerupsEnabled ? activeEffects   : [],
-      []);
-    return;
-  }
 
   let stateChanged = false;
 
@@ -215,13 +165,11 @@ function loop(ts) {
         stateChanged = true;
         if (scorer !== null) {
           sfxScore();
-          pendingSfx.push('score');
           awardPoint(scorer);
           ballTickAccum = 0;
           break;
         } else if (ball.vx !== prevVx || ball.vy !== prevVy) {
           sfxBallHit();
-          pendingSfx.push('ballHit');
         }
       }
     }
@@ -231,15 +179,10 @@ function loop(ts) {
     powerupsEnabled ? powerupsOnField : [],
     powerupsEnabled ? activeEffects   : [],
     []);
-
-  // Send state only when game state actually changed (on ticks), not every frame.
-  // This reduces network traffic from ~60 msg/sec to ~5–10 msg/sec.
-  if (onlineRole === 'host' && phase === 'playing' && stateChanged) sendState();
 }
 
 // ── Local AI helpers ──────────────────────────────────────────────────────────
 function applyAIDirToS2() {
-  // Apply the pending AI action to s2.nextDir, respecting reversal guard.
   if (!aiLocalMode || !aiPendingDir || !s2) return;
   const { dx, dy } = aiPendingDir;
   if (dx !== 0 && s2.dir.x === -dx) return;
@@ -248,8 +191,6 @@ function applyAIDirToS2() {
 }
 
 async function runAILocalInference() {
-  // Kick off one inference based on the CURRENT post-tick state. Result is
-  // stored in aiPendingDir and applied on the next snake tick.
   if (!aiLocalMode || !aiLocal || !aiLocal.ready) return;
   if (aiInferring) return;
   if (phase !== 'playing' || !s1 || !s2 || !ball) return;
@@ -280,14 +221,14 @@ function tick() {
 
   const d1 = snakeHitsDeath(s1, null);
   const d2 = snakeHitsDeath(s2, null);
-  if (d1 && d2) { sfxDeath(); pendingSfx.push('death'); endRound(); return; }
-  if (d1)       { sfxDeath(); pendingSfx.push('death'); awardPoint(2); return; }
-  if (d2)       { sfxDeath(); pendingSfx.push('death'); awardPoint(1); return; }
+  if (d1 && d2) { sfxDeath(); endRound(); return; }
+  if (d1)       { sfxDeath(); awardPoint(2); return; }
+  if (d2)       { sfxDeath(); awardPoint(1); return; }
 
   const sc = snakesCollide(s1, s2);
-  if (sc === 'both') { sfxDeath(); pendingSfx.push('death'); endRound(); return; }
-  if (sc === 's1')   { sfxDeath(); pendingSfx.push('death'); awardPoint(2); return; }
-  if (sc === 's2')   { sfxDeath(); pendingSfx.push('death'); awardPoint(1); return; }
+  if (sc === 'both') { sfxDeath(); endRound(); return; }
+  if (sc === 's1')   { sfxDeath(); awardPoint(2); return; }
+  if (sc === 's2')   { sfxDeath(); awardPoint(1); return; }
 }
 
 function awardPoint(player) {
@@ -344,7 +285,6 @@ function removeEffect(eff) {
 function collectPowerup(pu, player) {
   powerupsOnField = powerupsOnField.filter(p => p.uid !== pu.uid);
   sfxPowerup();
-  pendingSfx.push('powerup');
   applyEffect(pu.type, player);
 }
 
@@ -368,8 +308,7 @@ function startGame() {
   score1 = 0; score2 = 0;
   p1Pts.textContent = 0; p2Pts.textContent = 0;
   // Pick the BGM style BEFORE starting the loop so the new music style takes
-  // effect on the very first scheduled note instead of waiting ~6s for the
-  // next 16-beat loop boundary.
+  // effect on the very first scheduled note.
   if (aiLocalMode && aiLoadedVariant === 'insane') setBgmStyle('intense');
   else if (aiLocalMode && aiLoadedVariant === 'boss') setBgmStyle('celebration');
   else setBgmStyle('normal');
@@ -386,52 +325,42 @@ function startRound() {
   // Tint the AI's snake to match the difficulty-tier badge so the player
   // can tell which model they're playing at a glance.
   if (aiLocalMode && aiLoadedVariant) {
-    // Saturated tones in the same family as the default P1 #2af / P2 #f62.
     const tierColors = {
-      easy:   '#2c2',  // deep green
-      medium: '#cc0',  // deep yellow
-      hard:   '#f72',  // deep orange (close to original)
-      master: '#c3c',  // deep magenta
-      insane: '#e22',  // deep red
-      boss:   '#fb0',  // deep gold
+      easy:   '#2c2',
+      medium: '#cc0',
+      hard:   '#f72',
+      master: '#c3c',
+      insane: '#e22',
+      boss:   '#fb0',
     };
     if (tierColors[aiLoadedVariant]) ns2.color = tierColors[aiLoadedVariant];
-    // Animated effects mirroring the tier button — only top tiers get them.
     if (aiLoadedVariant === 'insane') ns2.effect = 'insane-glow';
     else if (aiLoadedVariant === 'boss') ns2.effect = 'boss-shimmer';
-    // Tint the P2 scoreboard so it matches the AI's snake.
     if (tierColors[aiLoadedVariant]) p2Pts.style.color = tierColors[aiLoadedVariant];
   } else {
-    // Reset P2 scoreboard outside AI mode.
     p2Pts.style.color = '';
   }
   s1 = ns1; s1.speedMult = 1;
   s2 = ns2; s2.speedMult = 1;
-  // Playing locally vs the AI: always serve from P1's side so the human
-  // doesn't have to scramble on the opening tick.
   ball = createBall(aiLocalMode ? -1 : undefined);
   if (powerupsEnabled) resetPowerupState();
   if (aiLocalMode && aiLocal) { aiLocal.reset(); aiPendingDir = null; }
   overlay.style.display = 'none';
   phase = 'playing';
-  if (onlineRole === 'host') sendState();
   startLoop();
 }
 
 function endRound() {
   phase = 'roundend';
-  if (onlineRole === 'host') sendState();
   setTimeout(() => { if (phase === 'roundend') startRound(); }, 1000);
 }
 
 function _showActionOnly(text) {
-  // Single-button overlay for pause / gameover: hide the LOCAL/ONLINE/AI mode
-  // picker plus the AI difficulty panel, keep only the action button visible
-  // with the requested label.
+  // Single-button overlay for pause / gameover: hide the LOCAL/AI mode picker
+  // plus the AI difficulty panel, keep only the action button visible.
   localBtn.textContent = text;
   localBtn.style.display = '';
   if (aiBtn) aiBtn.style.display = 'none';
-  if (onlineBtn) onlineBtn.style.display = 'none';
   if (aiPanel) aiPanel.style.display = 'none';
   mainMenu.style.display = 'flex';
 }
@@ -443,7 +372,6 @@ function pause() {
   ovMsg.textContent    = 'Press ESC or click Resume to continue.';
   _showActionOnly('RESUME');
   overlay.style.display = 'flex';
-  if (onlineRole === 'host') sendState();
 }
 
 function resume() {
@@ -452,28 +380,24 @@ function resume() {
   lastTs = performance.now();
   tickAccum = 0;
   resumeBgm();
-  if (onlineRole === 'host') sendState();
 }
 
 function endGame(winner) {
   phase = 'gameover';
   stopBgm();
   sfxWin();
-  pendingSfx.push('win');
   // Special case: human (P1) just beat INSANE in local-AI mode → unlock BOSS
   // and show a celebration overlay before the regular gameover screen.
   if (winner === 1 && aiLocalMode && aiLoadedVariant === 'insane' && !bossUnlocked) {
     bossUnlocked = true;
     try { localStorage.setItem('snakepong_boss_unlocked', '1'); } catch (e) {}
     _showBossUnlockCelebration();
-    if (onlineRole === 'host') sendState(winner);
     return;
   }
   ovTitle.textContent  = `PLAYER ${winner} WINS!`;
   ovMsg.textContent    = `Final score: ${score1} – ${score2}`;
   _showActionOnly('PLAY AGAIN');
   overlay.style.display = 'flex';
-  if (onlineRole === 'host') sendState(winner);
 }
 
 // Sentence-by-sentence reveal of the boss-unlock celebration. Each sentence
@@ -486,8 +410,8 @@ const _CELEBRATION_SENTENCES = [
   'FEARLESS &nbsp; RESTLESS &nbsp; ENDLESS',
   'AT 3 TIMES SPEED.',
 ];
-const _CELEBRATION_HOLD_MS  = 4000;   // how long each sentence stays at full opacity
-const _CELEBRATION_FADE_MS  = 900;    // fade in / out duration (matches CSS transition)
+const _CELEBRATION_HOLD_MS  = 4000;
+const _CELEBRATION_FADE_MS  = 900;
 let _celebrationTimeouts = [];
 
 function _showBossUnlockCelebration() {
@@ -504,8 +428,6 @@ function _showBossUnlockCelebration() {
 
   function showSentence(idx) {
     if (idx >= _CELEBRATION_SENTENCES.length) {
-      // After the last sentence has fully faded, present the FIGHT-THE-BOSS
-      // button as a fresh page (centred, message slot empty).
       msg.innerHTML = '&nbsp;';
       _celebrationTimeouts.push(setTimeout(() => {
         actions.classList.add('visible');
@@ -532,216 +454,15 @@ function _hideBossUnlockCelebration() {
   if (cel) cel.style.display = 'none';
 }
 
-// ── Online: state serialisation ───────────────────────────────────────────────
-function sendState(winner = null) {
-  if (!net) return;
-  const sfxToSend = pendingSfx.splice(0); // drain and send
-  net.send({
-    type: 'relay',
-    payload: {
-      type:   'state',
-      phase,  score1, score2, winner,
-      s1:   s1   ? { body: s1.body,   dir: s1.dir,   color: s1.color,   speedMult: s1.speedMult   } : null,
-      s2:   s2   ? { body: s2.body,   dir: s2.dir,   color: s2.color,   speedMult: s2.speedMult   } : null,
-      ball:           ball   ? { x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy } : null,
-      tickMs,
-      ballTickMs,
-      powerupsOnField,
-      activeEffects,
-      powerupsEnabled,
-      sfx: sfxToSend,
-    }
-  });
-}
-
-function applyRemoteState(payload) {
-  const prevPhase = phase;
-
-  s1    = payload.s1;
-  s2    = payload.s2;
-  ball  = payload.ball;
-  // Reset guest simulation accumulators — start fresh from authoritative state
-  guestTickAccum = 0;
-  guestBallAccum = 0;
-  if (payload.tickMs)     guestTickMs     = payload.tickMs;
-  if (payload.ballTickMs) guestBallTickMs = payload.ballTickMs;
-  score1 = payload.score1; score2 = payload.score2;
-  phase  = payload.phase;
-  p1Pts.textContent = score1;
-  p2Pts.textContent = score2;
-  powerupsOnField  = payload.powerupsOnField || [];
-  activeEffects    = payload.activeEffects   || [];
-  powerupsEnabled  = payload.powerupsEnabled ?? powerupsEnabled;
-
-  // BGM management
-  if (phase === 'playing'  && prevPhase !== 'playing'  && prevPhase !== 'roundend') startBgm();
-  if (phase === 'paused'   && prevPhase === 'playing')  pauseBgm();
-  if (phase === 'playing'  && prevPhase === 'paused')   resumeBgm();
-  if (phase === 'gameover' && prevPhase !== 'gameover') stopBgm();
-
-  // Overlay
-  if (phase === 'playing' || phase === 'roundend') {
-    overlay.style.display = 'none';
-  } else if (phase === 'gameover') {
-    ovTitle.textContent   = `PLAYER ${payload.winner} WINS!`;
-    ovMsg.textContent     = `Final score: ${score1} – ${score2}`;
-    startBtn.style.display = 'none';
-    overlay.style.display = 'flex';
-  } else if (phase === 'paused') {
-    ovTitle.textContent   = 'PAUSED';
-    ovMsg.textContent     = 'Host has paused the game.';
-    startBtn.style.display = 'none';
-    overlay.style.display = 'flex';
-  }
-
-  // SFX
-  for (const sfx of (payload.sfx || [])) {
-    if (sfx === 'ballHit') sfxBallHit();
-    else if (sfx === 'score')   sfxScore();
-    else if (sfx === 'death')   sfxDeath();
-    else if (sfx === 'win')     sfxWin();
-    else if (sfx === 'powerup') sfxPowerup();
-  }
-}
-
-function applyGuestInput({ dx, dy }) {
-  if (phase !== 'playing' || !s2) return;
-  if (dx !== 0 && s2.dir.x === -dx) return;
-  if (dy !== 0 && s2.dir.y === -dy) return;
-  s2.nextDir = { x: dx, y: dy };
-}
-
-// ── Online UI ─────────────────────────────────────────────────────────────────
-async function connectNet() {
-  if (net) return; // already connected
-  const n = createNetwork(WS_URL);
-  await n.connect();  // throws on failure
-  net = n;
-  net.on('opponent_left', () => {
-    const wasPlaying = phase === 'playing' || phase === 'paused';
-    onlineRole = null;
-    net = null;
-    if (wasPlaying) { stopBgm(); phase = 'gameover'; }
-    ovTitle.textContent   = 'OPPONENT LEFT';
-    ovMsg.textContent     = 'Your opponent disconnected.';
-    startBtn.textContent  = 'PLAY AGAIN';
-    startBtn.style.display = '';
-    overlay.style.display = 'flex';
-  });
-  net.on('disconnect', () => { onlineRole = null; net = null; });
-}
-
-onlineBtn.addEventListener('click', () => {
-  mainMenu.style.display = 'none';
-  onlinePanel.style.display = 'flex';
-});
-
-onlineBack.addEventListener('click', () => {
-  if (net) { net.close(); net = null; }
-  onlineRole = null;
-  onlinePanel.style.display = 'none';
-  // Restore main-menu buttons (in case any were hidden by pause/gameover).
-  localBtn.textContent = 'LOCAL';
-  localBtn.style.display = '';
-  aiBtn.style.display = '';
-  onlineBtn.style.display = '';
-  mainMenu.style.display = 'flex';
-  roomCodeEl.textContent  = '';
-  onlineStatus.textContent = '';
-  joinCodeEl.value = '';
-  hostBtn.disabled = false;
-  joinBtn.disabled = false;
-});
-
-hostBtn.addEventListener('click', async () => {
-  hostBtn.disabled = true;
-  onlineStatus.textContent = 'Connecting…';
-  try {
-    await connectNet();
-  } catch {
-    onlineStatus.textContent = 'Cannot reach server. Is it running?';
-    hostBtn.disabled = false;
-    return;
-  }
-  // Read head selection (optional) and include in host message.
-  const headSel = document.getElementById('ai-head-sel');
-  const head = headSel ? parseInt(headSel.value) : undefined;
-  const msg = { type: 'host' };
-  if (Number.isInteger(head)) msg.head = head;
-  net.send(msg);
-  net.on('hosted', ({ code }) => {
-    roomCodeEl.textContent   = code;
-    onlineStatus.textContent = 'Share this code. Waiting for opponent…';
-  });
-  net.on('guest_joined', () => {
-    onlineStatus.textContent = 'Opponent joined!';
-    onlineRole = 'host';
-    net.on('relay', ({ payload }) => {
-      if (payload.type === 'input') applyGuestInput(payload);
-      if (payload.type === 'pause'  && phase === 'playing') pause();
-      if (payload.type === 'resume' && phase === 'paused')  resume();
-    });
-    // Switch back to main menu overlay and start
-    onlinePanel.style.display = 'none';
-    mainMenu.style.display    = 'flex';
-    startBtn.style.display    = '';
-    startGame();
-  });
-});
-
-joinBtn.addEventListener('click', async () => {
-  const code = joinCodeEl.value.trim().toUpperCase();
-  if (!code) { onlineStatus.textContent = 'Enter a room code.'; return; }
-  joinBtn.disabled = true;
-  onlineStatus.textContent = 'Connecting…';
-  try {
-    await connectNet();
-  } catch {
-    onlineStatus.textContent = 'Cannot reach server. Is it running?';
-    joinBtn.disabled = false;
-    return;
-  }
-  net.send({ type: 'join', code });
-  net.on('error', ({ reason }) => {
-    onlineStatus.textContent = reason;
-    joinBtn.disabled = false;
-  });
-  net.on('joined', () => {
-    onlineRole = 'guest';
-    onlinePanel.style.display = 'none';
-    mainMenu.style.display    = 'flex';
-    ovTitle.textContent       = 'CONNECTED';
-    ovMsg.textContent         = 'Waiting for host to start…';
-    startBtn.style.display    = 'none';
-    overlay.style.display     = 'flex';
-    startLoop();
-    net.on('relay', ({ payload }) => {
-      if (payload.type === 'state') applyRemoteState(payload);
-    });
-  });
-});
-
 // ── Settings modal ────────────────────────────────────────────────────────────
 function openSettings() {
   settingsModal.classList.add('open');
-  if (phase === 'playing') {
-    if (onlineRole === 'guest') {
-      if (net) net.send({ type: 'relay', payload: { type: 'pause' } });
-    } else {
-      pause();
-    }
-  }
+  if (phase === 'playing') pause();
 }
 
 function closeSettings() {
   settingsModal.classList.remove('open');
-  if (phase === 'paused') {
-    if (onlineRole === 'guest') {
-      if (net) net.send({ type: 'relay', payload: { type: 'resume' } });
-    } else {
-      resume();
-    }
-  }
+  if (phase === 'paused') resume();
 }
 
 settingsBtn.addEventListener('click', openSettings);
@@ -773,33 +494,16 @@ registerInput({
       closeSettings();
       return;
     }
-    if (onlineRole === 'guest') {
-      if (phase === 'playing' && net) net.send({ type: 'relay', payload: { type: 'pause' } });
-      else if (phase === 'paused' && net) net.send({ type: 'relay', payload: { type: 'resume' } });
-      return;
-    }
     if (phase === 'playing') pause();
     else if (phase === 'paused') resume();
   },
   onDirectionP1(dx, dy) {
-    if (onlineRole === 'guest') return; // guest controls P2 only
     if (phase !== 'playing' || !s1) return;
     if (dx !== 0 && s1.dir.x === -dx) return;
     if (dy !== 0 && s1.dir.y === -dy) return;
     s1.nextDir = { x: dx, y: dy };
   },
   onDirectionP2(dx, dy) {
-    if (onlineRole === 'guest') {
-      if (!net) return;
-      // Client-side prediction: update direction locally for immediate visual
-      // feedback; host confirms on next state update.
-      if (s2 && phase === 'playing') {
-        const reversing = (dx !== 0 && s2.dir.x === -dx) || (dy !== 0 && s2.dir.y === -dy);
-        if (!reversing) { s2.dir = { x: dx, y: dy }; s2.nextDir = { x: dx, y: dy }; }
-      }
-      net.send({ type: 'relay', payload: { type: 'input', dx, dy } });
-      return;
-    }
     if (aiLocalMode) return;  // AI controls P2
     if (phase !== 'playing' || !s2) return;
     if (dx !== 0 && s2.dir.x === -dx) return;
@@ -810,29 +514,24 @@ registerInput({
 
 // ── UI events ─────────────────────────────────────────────────────────────────
 localBtn.addEventListener('click', () => {
-  if (onlineRole === 'guest') return;
   if (phase === 'paused') { resume(); return; }
-  // From a fresh main-menu click: this is a 2-human local game, not AI.
-  // From a gameover replay: keep the current mode (AI mode persists across
-  // PLAY AGAIN; user can refresh to switch).
+  // From a fresh main-menu click: 2-human local game.
+  // From a gameover replay: keep the current mode (AI mode persists).
   if (phase !== 'gameover') {
     aiLocalMode = false;
   }
   startGame();
 });
 
-// AI sub-panel show/hide — mirrors the online-panel pattern.
 aiBtn.addEventListener('click', () => {
   mainMenu.style.display = 'none';
   aiPanel.style.display = 'flex';
 });
 aiBack.addEventListener('click', () => {
   aiPanel.style.display = 'none';
-  // Restore main-menu buttons in case a prior pause/gameover hid them.
   localBtn.textContent = 'LOCAL';
   localBtn.style.display = '';
   aiBtn.style.display = '';
-  onlineBtn.style.display = '';
   mainMenu.style.display = 'flex';
 });
 
@@ -861,9 +560,8 @@ function lockSettingsForAi() {
 async function _loadAndPlayVariant(variant, btn) {
   if (aiLoading) return;
   aiVariant = variant;
-  // Visual: clear other actives, add 'loading' to the one we're about to load.
-  // `btn` may be null (e.g. when launched directly from the boss-celebration
-  // "FACE THE BOSS" button, which isn't part of the variant group).
+  // `btn` may be null when launched from the boss-celebration "FIGHT THE
+  // BOSS" button, which isn't part of the variant group.
   aiVariantGroup.querySelectorAll('.ai-variant-btn').forEach(b => {
     b.classList.toggle('active', btn !== null && b === btn);
     b.classList.remove('loading');
@@ -911,13 +609,10 @@ async function _loadAndPlayVariant(variant, btn) {
 aiVariantGroup.addEventListener('click', e => {
   const btn = e.target.closest('.ai-variant-btn');
   if (!btn) return;
-  // BOSS = mult=3, no win cap. Other tiers = normal mult=2 / standard win.
   bossModeActive = btn.dataset.variant === 'boss';
   _loadAndPlayVariant(btn.dataset.variant, btn);
 });
 
-// Celebration overlay buttons. "FIGHT THE BOSS" launches the BOSS game
-// directly — boss is never offered in the regular tier picker.
 if (celebrationContinue) {
   celebrationContinue.addEventListener('click', () => {
     _hideBossUnlockCelebration();
@@ -928,12 +623,10 @@ if (celebrationContinue) {
 if (celebrationBack) {
   celebrationBack.addEventListener('click', () => {
     _hideBossUnlockCelebration();
-    // Restore the regular main menu.
     aiPanel.style.display = 'none';
     localBtn.textContent = 'LOCAL';
     localBtn.style.display = '';
     aiBtn.style.display = '';
-    onlineBtn.style.display = '';
     mainMenu.style.display = 'flex';
   });
 }
