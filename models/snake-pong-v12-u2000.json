@@ -1,0 +1,15 @@
+{
+  "source_checkpoint": "rl/runs/v12/snap_latest.pt",
+  "arch": "ppo_ac",
+  "head": null,
+  "reduce": null,
+  "snake_length": 4,
+  "snake_multiplier": 2,
+  "interp_ball_obs": true,
+  "hidden_size": 256,
+  "obs_dim": 20,
+  "n_actions": 4,
+  "input_name": "obs",
+  "output_name": "q",
+  "description": "ppo_ac_actor, L=4, mult=2"
+}

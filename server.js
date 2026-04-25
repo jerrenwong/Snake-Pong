@@ -13,9 +13,13 @@ const { WebSocketServer } = require('ws');
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js':   'application/javascript',
+  '.mjs':  'application/javascript',
   '.css':  'text/css',
   '.png':  'image/png',
   '.ico':  'image/x-icon',
+  '.json': 'application/json',
+  '.onnx': 'application/octet-stream',
+  '.wasm': 'application/wasm',
 };
 
 const ROOT = __dirname;

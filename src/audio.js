@@ -7,6 +7,13 @@ let ctx     = null;   // AudioContext
 let master  = null;   // master GainNode
 let bgmLoop = null;   // setTimeout handle for loop rescheduling
 let bgmOn   = false;
+// Dedicated gain node for the CURRENT BGM session. Every tone/percussion note
+// routes through this node instead of the master; stopping the BGM ramps this
+// node to 0 and disconnects it, killing any notes whose Web Audio events were
+// already scheduled into the past future. Without this, calling stop→start in
+// quick succession (pause/resume, game-over → play-again) leaves the old
+// scheduled notes audibly playing alongside the new loop.
+let bgmGain = null;
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
@@ -103,7 +110,7 @@ function schedulePercussion(startTime) {
     g.gain.setValueAtTime(accent ? 0.04 : 0.018, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     src.connect(g);
-    g.connect(master);
+    g.connect(bgmGain || master);
     src.start(t);
     src.stop(t + dur + 0.01);
   }
@@ -111,13 +118,12 @@ function schedulePercussion(startTime) {
 
 function scheduleLoop(startTime) {
   if (!bgmOn) return;
-  const c = getCtx();
 
   for (const [note, beat, dur] of MELODY) {
-    tone(hz(note), startTime + beat * BEAT, dur * BEAT, 'square', 0.07);
+    tone(hz(note), startTime + beat * BEAT, dur * BEAT, 'square', 0.07, bgmGain);
   }
   for (const [note, beat, dur] of BASS) {
-    tone(hz(note), startTime + beat * BEAT, dur * BEAT, 'triangle', 0.11);
+    tone(hz(note), startTime + beat * BEAT, dur * BEAT, 'triangle', 0.11, bgmGain);
   }
   schedulePercussion(startTime);
 
@@ -129,13 +135,29 @@ function scheduleLoop(startTime) {
 export function startBgm() {
   if (bgmOn) return;
   bgmOn = true;
-  scheduleLoop(getCtx().currentTime + 0.05);
+  const c = getCtx();
+  bgmGain = c.createGain();
+  bgmGain.gain.value = 1.0;
+  bgmGain.connect(master);
+  scheduleLoop(c.currentTime + 0.05);
 }
 
 export function stopBgm() {
   bgmOn = false;
   clearTimeout(bgmLoop);
   bgmLoop = null;
+  if (bgmGain) {
+    const c = getCtx();
+    const t = c.currentTime;
+    // Quick fade-out (30 ms) so already-scheduled notes stop cleanly without
+    // a click, then detach so future schedule ticks can't sneak through.
+    const g = bgmGain;
+    g.gain.cancelScheduledValues(t);
+    g.gain.setValueAtTime(g.gain.value, t);
+    g.gain.linearRampToValueAtTime(0, t + 0.03);
+    setTimeout(() => { try { g.disconnect(); } catch (_) { /* already gone */ } }, 80);
+    bgmGain = null;
+  }
 }
 
 export function pauseBgm() { stopBgm(); }

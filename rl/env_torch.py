@@ -62,45 +62,50 @@ class TorchVectorSnakePongGame:
         return self.steps % self.snake_multiplier
 
     def _init_mask(self, mask: torch.Tensor) -> None:
-        k = int(mask.sum().item())
-        if k == 0:
-            return
-        idx = mask.nonzero(as_tuple=False).squeeze(1)
+        """Reset envs where mask[i] is True. Sync-free: always does O(N) work
+        via torch.where() instead of a variable-size indexed write (which would
+        require `.item()` on the mask-sum). Worth it in inner loops where mask
+        is mostly False — tiny extra compute but no GPU→CPU stall.
+        """
         hy = ROWS // 2
         h1x = WALL_L // 2
         h2x = WALL_R + (COLS - WALL_R) // 2
         L = self.snake_length
+        N = self.n
+        dev = self.device
 
-        # Snake bodies (broadcast across k games in idx)
-        offsets = torch.arange(L, dtype=torch.int32, device=self.device)  # (L,)
-        s1_x = h1x - offsets  # (L,)
-        s2_x = h2x + offsets
-        y_const = torch.full((L,), hy, dtype=torch.int32, device=self.device)
+        # Body coordinates (broadcast to (N, L)).
+        offsets = torch.arange(L, dtype=torch.int32, device=dev)
+        s1_x_new = (h1x - offsets).unsqueeze(0).expand(N, L)
+        s2_x_new = (h2x + offsets).unsqueeze(0).expand(N, L)
+        y_new = torch.full((N, L), hy, dtype=torch.int32, device=dev)
+        m_body = mask.view(-1, 1)
 
-        # bodies[idx, 0, :, 0] = s1_x (broadcast over idx)
-        self.bodies[idx, 0, :, 0] = s1_x.unsqueeze(0).expand(k, -1)
-        self.bodies[idx, 0, :, 1] = y_const.unsqueeze(0).expand(k, -1)
-        self.bodies[idx, 1, :, 0] = s2_x.unsqueeze(0).expand(k, -1)
-        self.bodies[idx, 1, :, 1] = y_const.unsqueeze(0).expand(k, -1)
+        self.bodies[:, 0, :, 0] = torch.where(m_body, s1_x_new, self.bodies[:, 0, :, 0])
+        self.bodies[:, 0, :, 1] = torch.where(m_body, y_new, self.bodies[:, 0, :, 1])
+        self.bodies[:, 1, :, 0] = torch.where(m_body, s2_x_new, self.bodies[:, 1, :, 0])
+        self.bodies[:, 1, :, 1] = torch.where(m_body, y_new, self.bodies[:, 1, :, 1])
 
-        self.dirs[idx, 0, 0] = 1
-        self.dirs[idx, 0, 1] = 0
-        self.dirs[idx, 1, 0] = -1
-        self.dirs[idx, 1, 1] = 0
+        one32 = torch.ones(N, dtype=torch.int32, device=dev)
+        zero32 = torch.zeros(N, dtype=torch.int32, device=dev)
+        self.dirs[:, 0, 0] = torch.where(mask, one32, self.dirs[:, 0, 0])
+        self.dirs[:, 0, 1] = torch.where(mask, zero32, self.dirs[:, 0, 1])
+        self.dirs[:, 1, 0] = torch.where(mask, -one32, self.dirs[:, 1, 0])
+        self.dirs[:, 1, 1] = torch.where(mask, zero32, self.dirs[:, 1, 1])
 
-        # Random ball: side ±1, vy ±1
-        side_sign = (torch.randint(0, 2, (k,), generator=self._gen, device=self.device) * 2 - 1).to(torch.int32)
-        vy_sign = (torch.randint(0, 2, (k,), generator=self._gen, device=self.device) * 2 - 1).to(torch.int32)
-        bx = torch.where(side_sign < 0,
-                         torch.tensor(h1x, dtype=torch.int32, device=self.device),
-                         torch.tensor(h2x, dtype=torch.int32, device=self.device))
-        self.balls[idx, 0] = bx
-        self.balls[idx, 1] = hy
-        self.balls[idx, 2] = side_sign
-        self.balls[idx, 3] = vy_sign
+        # Random ball for every env; mask-in only for reset ones.
+        side_all = (torch.randint(0, 2, (N,), generator=self._gen, device=dev) * 2 - 1).to(torch.int32)
+        vy_all = (torch.randint(0, 2, (N,), generator=self._gen, device=dev) * 2 - 1).to(torch.int32)
+        bx_all = torch.where(side_all < 0, one32 * h1x, one32 * h2x)
+        hy_tensor = one32 * hy
 
-        self.steps[idx] = 0
-        self.done[idx] = False
+        self.balls[:, 0] = torch.where(mask, bx_all, self.balls[:, 0])
+        self.balls[:, 1] = torch.where(mask, hy_tensor, self.balls[:, 1])
+        self.balls[:, 2] = torch.where(mask, side_all, self.balls[:, 2])
+        self.balls[:, 3] = torch.where(mask, vy_all, self.balls[:, 3])
+
+        self.steps = torch.where(mask, torch.zeros_like(self.steps), self.steps)
+        self.done = self.done & ~mask
 
     def reset(self, mask: Optional[torch.Tensor] = None) -> None:
         if mask is None:

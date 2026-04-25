@@ -75,5 +75,7 @@ def compute_loss_bootstrapped(
 
     per_example = F.smooth_l1_loss(q, target, reduction="none")  # (B, K)
     denom = mask.sum(dim=0).clamp(min=1.0)
-    loss = (per_example * mask).sum(dim=0) / denom               # (K,)
-    return loss.mean()
+    loss_per_head = (per_example * mask).sum(dim=0) / denom      # (K,)
+    # Store per-head detail so train loop can log them individually.
+    compute_loss_bootstrapped.last_per_head = loss_per_head.detach()
+    return loss_per_head.mean()

@@ -3,3 +3,4 @@ __pycache__/
 rl/runs/
 wandb/
 node_modules/
+snake-pong-dist.zip

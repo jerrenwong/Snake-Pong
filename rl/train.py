@@ -107,7 +107,7 @@ def train(cfg: argparse.Namespace) -> None:
     n_params = sum(p.numel() for p in q_net.parameters())
     print(f"[model] arch={cfg.model_arch} hidden={cfg.hidden_size} "
           f"heads={cfg.n_heads if 'bootstrap' in cfg.model_arch else 1} params={n_params:,}")
-    is_bootstrap = cfg.model_arch in ("bootstrapped", "bootstrapped_dueling")
+    is_bootstrap = cfg.model_arch in ("bootstrapped", "bootstrapped_dueling", "independent_ensemble")
 
     # Optionally warm-start from a prior checkpoint. snake_length must match
     # (obs-dim constraint), but arch may differ — unmatched keys (e.g.
@@ -196,6 +196,8 @@ def train(cfg: argparse.Namespace) -> None:
     if is_bootstrap:
         rollout_kwargs["n_heads"] = cfg.n_heads
         rollout_kwargs["bootstrap_mask_prob"] = cfg.bootstrap_mask_prob
+    if use_gpu_rollout:
+        rollout_kwargs["death_penalty"] = cfg.death_penalty
     vec = rollout_cls(**rollout_kwargs)
     print(f"[rollout] using {rollout_cls.__name__} on {device}"
           + (f" (bootstrap K={cfg.n_heads})" if is_bootstrap else ""))
@@ -254,6 +256,7 @@ def train(cfg: argparse.Namespace) -> None:
         # 2) Train
         iter_losses: list[float] = []
         iter_q_mean: list[float] = []
+        iter_per_head_losses = None  # set on first bootstrap grad step
         iter_q_max: list[float] = []
         if replay.size >= cfg.min_replay:
             for _ in range(cfg.grad_steps_per_iter):
@@ -263,6 +266,12 @@ def train(cfg: argparse.Namespace) -> None:
                     batch = replay.sample(cfg.batch_size, rng)
                 if is_bootstrap:
                     loss = compute_loss_bootstrapped(q_net, target_net, batch, cfg.gamma, device)
+                    # Accumulate per-head losses for logging
+                    ph = compute_loss_bootstrapped.last_per_head.cpu().numpy()
+                    if 'iter_per_head_losses' not in locals() or iter_per_head_losses is None:
+                        iter_per_head_losses = [[] for _ in range(len(ph))]
+                    for k, v in enumerate(ph):
+                        iter_per_head_losses[k].append(float(v))
                 else:
                     loss = compute_loss(q_net, target_net, batch, cfg.gamma, device)
                 optimizer.zero_grad()
@@ -309,6 +318,10 @@ def train(cfg: argparse.Namespace) -> None:
             metrics["train/loss"] = float(np.mean(iter_losses))
             metrics["train/q_mean"] = float(np.mean(iter_q_mean))
             metrics["train/q_max"] = float(np.mean(iter_q_max))
+            if iter_per_head_losses is not None:
+                for k, lst in enumerate(iter_per_head_losses):
+                    if lst:
+                        metrics[f"train/loss_h{k}"] = float(np.mean(lst))
 
         # 6) Periodic benchmark evaluation (denser in final stretch)
         eval_every_now = current_eval_every(iter_1based)
@@ -423,8 +436,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--print-every", type=int, default=1)
     # DQN
     p.add_argument("--model-arch", type=str, default="dueling",
-                   choices=["mlp", "dueling", "bootstrapped", "bootstrapped_dueling"],
-                   help="Q-network architecture. 'bootstrapped_dueling' combines both.")
+                   choices=["mlp", "dueling", "bootstrapped", "bootstrapped_dueling", "independent_ensemble"],
+                   help="Q-network architecture. 'independent_ensemble' = K fully "
+                        "independent networks (no shared trunk).")
+    p.add_argument("--death-penalty", type=float, default=0.0,
+                   help="Extra reward added to the learner when its snake dies "
+                        "by wall/self/collide (e.g. -10). Encourages risk-averse play.")
     p.add_argument("--n-heads", type=int, default=5,
                    help="Number of Q-heads in Bootstrapped DQN.")
     p.add_argument("--hidden-size", type=int, default=256,

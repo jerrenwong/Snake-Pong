@@ -24,8 +24,9 @@ export function createSnakes(len) {
   return { s1, s2 };
 }
 
-export function createBall() {
-  const side = Math.random() < 0.5 ? -1 : 1;
+// side: -1 for P1 (left), +1 for P2 (right), or undefined for random.
+export function createBall(side) {
+  if (side === undefined) side = Math.random() < 0.5 ? -1 : 1;
   const bx   = side < 0
     ? Math.floor(WALL_L / 2)
     : WALL_R + Math.floor((COLS - WALL_R) / 2);

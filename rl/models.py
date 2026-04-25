@@ -153,6 +153,41 @@ class BootstrappedDuelingQNetwork(nn.Module):
         return torch.stack(qs, dim=1)
 
 
+class IndependentEnsembleQNetwork(nn.Module):
+    """K fully independent Q-networks. Unlike BootstrappedQNetwork there is
+    NO shared trunk — each head is its own complete 4-layer MLP.
+
+    Forward returns (B, K, n_actions) so it plugs into the same bootstrapped
+    training path (per-head masks, per-env active head selection, etc.).
+
+    Use-case: "population of 5 independent agents" learning via self-play +
+    head-vs-head matchups. Each agent develops its own features from scratch.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        n_actions: int = N_ACTIONS,
+        hidden: int = 256,
+        n_heads: int = 5,
+    ):
+        super().__init__()
+        self.n_heads = n_heads
+        self.n_actions = n_actions
+        self.nets = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(obs_dim, hidden), nn.ReLU(),
+                nn.Linear(hidden, hidden), nn.ReLU(),
+                nn.Linear(hidden, hidden), nn.ReLU(),
+                nn.Linear(hidden, n_actions),
+            )
+            for _ in range(n_heads)
+        ])
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        return torch.stack([net(obs) for net in self.nets], dim=1)  # (B, K, A)
+
+
 def build_q_net(
     arch: str,
     obs_dim: int,
@@ -169,4 +204,6 @@ def build_q_net(
         return BootstrappedQNetwork(obs_dim, n_actions, n_heads=n_heads, hidden=hidden)
     if arch == "bootstrapped_dueling":
         return BootstrappedDuelingQNetwork(obs_dim, n_actions, n_heads=n_heads, hidden=hidden)
+    if arch == "independent_ensemble":
+        return IndependentEnsembleQNetwork(obs_dim, n_actions, n_heads=n_heads, hidden=hidden)
     raise ValueError(f"Unknown model arch: {arch}")

@@ -125,6 +125,7 @@ class VecRolloutGPU:
         interp_ball: bool = True,
         n_heads: int = 0,
         bootstrap_mask_prob: float = 0.5,
+        death_penalty: float = 0.0,
         rng: Optional[np.random.Generator] = None,
     ):
         self.n_envs = n_envs
@@ -136,6 +137,7 @@ class VecRolloutGPU:
         self.interp_ball = interp_ball
         self.n_heads = n_heads
         self.bootstrap_mask_prob = bootstrap_mask_prob
+        self.death_penalty = float(death_penalty)
         self._np_rng = rng if rng is not None else np.random.default_rng()
 
         self._gen = torch.Generator(device=self.device)
@@ -246,6 +248,17 @@ class VecRolloutGPU:
             won = (scorer.to(torch.int64) == self.learner_sides)
             lost = (scorer != 0) & (scorer != 3) & ~won
             rewards = torch.where(won, 1.0, torch.where(lost, -1.0, 0.0)).to(torch.float32)
+            # Optional shaping: extra penalty if the learner-side snake died
+            # from wall / self / inter-snake collision (encourages risk-aversion).
+            if self.death_penalty != 0.0:
+                s1_died = result["s1_died"]
+                s2_died = result["s2_died"]
+                learner_died = torch.where(self.learner_sides == 1, s1_died, s2_died)
+                rewards = rewards + torch.where(
+                    learner_died,
+                    torch.tensor(self.death_penalty, dtype=torch.float32, device=self.device),
+                    torch.tensor(0.0, dtype=torch.float32, device=self.device),
+                )
 
             terminated = result["terminated"] | (scorer == 3)
             truncated = (~terminated) & (self.ep_lengths >= self.max_steps)

@@ -11,6 +11,7 @@ import { POWERUP_DEFS, spawnPowerup,
          FIELD_EXPIRE_MS }                                from './powerups.js';
 import { WALL_L, WALL_R }                                 from './constants.js';
 import { createNetwork }                                  from './network.js';
+import { LocalAI }                                        from './ai_local.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const lenSl  = document.getElementById('len-sl');
@@ -22,7 +23,11 @@ const winV   = document.getElementById('win-v');
 const overlay    = document.getElementById('overlay');
 const ovTitle    = document.getElementById('ov-title');
 const ovMsg      = document.getElementById('ov-msg');
-const startBtn   = document.getElementById('start-btn');
+// Step-1 mode buttons. `localBtn` doubles as the pause/gameover action
+// button (text swaps to RESUME / PLAY AGAIN), so it's the canonical handle
+// for "the big action button at the bottom of the menu overlay".
+const localBtn   = document.getElementById('local-btn');
+const startBtn   = localBtn;  // backwards-compatible alias
 const p1Pts      = document.getElementById('p1-pts');
 const p2Pts      = document.getElementById('p2-pts');
 const settingsBtn   = document.getElementById('settings-btn');
@@ -41,6 +46,11 @@ const hostBtn      = document.getElementById('host-btn');
 const roomCodeEl   = document.getElementById('room-code');
 const joinCodeEl   = document.getElementById('join-code');
 const joinBtn      = document.getElementById('join-btn');
+const aiLocalBtn   = document.getElementById('ai-local-btn');
+const aiVariantGroup = document.getElementById('ai-variant-group');
+const aiBtn       = document.getElementById('ai-btn');
+const aiPanel     = document.getElementById('ai-panel');
+const aiBack      = document.getElementById('ai-back');
 
 // Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
@@ -73,6 +83,18 @@ let guestTickAccum      = 0;     // guest-local snake tick accumulator
 let guestBallAccum      = 0;     // guest-local ball tick accumulator
 let guestTickMs         = 400;   // snake tick interval from host
 let guestBallTickMs     = 200;   // ball tick interval from host
+
+// ── Local AI state (bypasses WebSocket; ONNX model plays P2) ──────────────────
+// Model was trained with snake_length=4, snake_multiplier=2. If the UI is set
+// differently we still feed the model — it tolerates length mismatch (pad/truncate)
+// but will degrade if snake_multiplier doesn't match training.
+let aiLocalMode      = false;    // true when "PLAY VS AI (LOCAL)" is active
+let aiLocal          = null;     // LocalAI instance (lazy-init)
+let aiLoading        = false;
+let aiInferring      = false;    // prevent overlapping inference calls
+let aiPendingDir     = null;     // latest {dx,dy} from AI — consumed on next tick
+let aiVariant        = 'hard';  // default tier; updated by ai-variant-btn
+let aiLoadedVariant  = null;     // which variant is currently loaded in aiLocal
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 
@@ -164,6 +186,10 @@ function loop(ts) {
       if (phase !== 'playing') { tickAccum = 0; ballTickAccum = 0; break; }
     }
 
+    // Kick off local-AI inference for P2 between ticks. Observation reflects
+    // post-tick state; result is consumed by the next tick() via aiPendingDir.
+    if (aiLocalMode && stateChanged) runAILocalInference();
+
     // Ball ticks
     if (phase === 'playing') {
       ballTickAccum += dt;
@@ -203,8 +229,36 @@ function loop(ts) {
   if (onlineRole === 'host' && phase === 'playing' && stateChanged) sendState();
 }
 
+// ── Local AI helpers ──────────────────────────────────────────────────────────
+function applyAIDirToS2() {
+  // Apply the pending AI action to s2.nextDir, respecting reversal guard.
+  if (!aiLocalMode || !aiPendingDir || !s2) return;
+  const { dx, dy } = aiPendingDir;
+  if (dx !== 0 && s2.dir.x === -dx) return;
+  if (dy !== 0 && s2.dir.y === -dy) return;
+  s2.nextDir = { x: dx, y: dy };
+}
+
+async function runAILocalInference() {
+  // Kick off one inference based on the CURRENT post-tick state. Result is
+  // stored in aiPendingDir and applied on the next snake tick.
+  if (!aiLocalMode || !aiLocal || !aiLocal.ready) return;
+  if (aiInferring) return;
+  if (phase !== 'playing' || !s1 || !s2 || !ball) return;
+  aiInferring = true;
+  try {
+    const res = await aiLocal.decide(s1, s2, ball);
+    if (res) aiPendingDir = { dx: res.dx, dy: res.dy };
+  } catch (e) {
+    console.error('[ai-local] inference error:', e);
+  } finally {
+    aiInferring = false;
+  }
+}
+
 // ── Game logic ────────────────────────────────────────────────────────────────
 function tick() {
+  if (aiLocalMode) applyAIDirToS2();
   for (let i = 0; i < (s1.speedMult || 1); i++) stepSnake(s1);
   for (let i = 0; i < (s2.speedMult || 1); i++) stepSnake(s2);
 
@@ -313,8 +367,11 @@ function startRound() {
   const { s1: ns1, s2: ns2 } = createSnakes(parseInt(lenSl.value));
   s1 = ns1; s1.speedMult = 1;
   s2 = ns2; s2.speedMult = 1;
-  ball = createBall();
+  // Playing locally vs the AI: always serve from P1's side so the human
+  // doesn't have to scramble on the opening tick.
+  ball = createBall(aiLocalMode ? -1 : undefined);
   if (powerupsEnabled) resetPowerupState();
+  if (aiLocalMode && aiLocal) { aiLocal.reset(); aiPendingDir = null; }
   overlay.style.display = 'none';
   phase = 'playing';
   if (onlineRole === 'host') sendState();
@@ -327,12 +384,24 @@ function endRound() {
   setTimeout(() => { if (phase === 'roundend') startRound(); }, 1000);
 }
 
+function _showActionOnly(text) {
+  // Single-button overlay for pause / gameover: hide the LOCAL/ONLINE/AI mode
+  // picker plus the AI difficulty panel, keep only the action button visible
+  // with the requested label.
+  localBtn.textContent = text;
+  localBtn.style.display = '';
+  if (aiBtn) aiBtn.style.display = 'none';
+  if (onlineBtn) onlineBtn.style.display = 'none';
+  if (aiPanel) aiPanel.style.display = 'none';
+  mainMenu.style.display = 'flex';
+}
+
 function pause() {
   phase = 'paused';
   pauseBgm();
   ovTitle.textContent  = 'PAUSED';
   ovMsg.textContent    = 'Press ESC or click Resume to continue.';
-  startBtn.textContent = 'RESUME';
+  _showActionOnly('RESUME');
   overlay.style.display = 'flex';
   if (onlineRole === 'host') sendState();
 }
@@ -353,7 +422,7 @@ function endGame(winner) {
   pendingSfx.push('win');
   ovTitle.textContent  = `PLAYER ${winner} WINS!`;
   ovMsg.textContent    = `Final score: ${score1} – ${score2}`;
-  startBtn.textContent = 'PLAY AGAIN';
+  _showActionOnly('PLAY AGAIN');
   overlay.style.display = 'flex';
   if (onlineRole === 'host') sendState(winner);
 }
@@ -466,6 +535,11 @@ onlineBack.addEventListener('click', () => {
   if (net) { net.close(); net = null; }
   onlineRole = null;
   onlinePanel.style.display = 'none';
+  // Restore main-menu buttons (in case any were hidden by pause/gameover).
+  localBtn.textContent = 'LOCAL';
+  localBtn.style.display = '';
+  aiBtn.style.display = '';
+  onlineBtn.style.display = '';
   mainMenu.style.display = 'flex';
   roomCodeEl.textContent  = '';
   onlineStatus.textContent = '';
@@ -621,6 +695,7 @@ registerInput({
       net.send({ type: 'relay', payload: { type: 'input', dx, dy } });
       return;
     }
+    if (aiLocalMode) return;  // AI controls P2
     if (phase !== 'playing' || !s2) return;
     if (dx !== 0 && s2.dir.x === -dx) return;
     if (dy !== 0 && s2.dir.y === -dy) return;
@@ -629,10 +704,99 @@ registerInput({
 });
 
 // ── UI events ─────────────────────────────────────────────────────────────────
-startBtn.addEventListener('click', () => {
+localBtn.addEventListener('click', () => {
   if (onlineRole === 'guest') return;
   if (phase === 'paused') { resume(); return; }
+  // From a fresh main-menu click: this is a 2-human local game, not AI.
+  // From a gameover replay: keep the current mode (AI mode persists across
+  // PLAY AGAIN; user can refresh to switch).
+  if (phase !== 'gameover') {
+    aiLocalMode = false;
+  }
   startGame();
+});
+
+// AI sub-panel show/hide — mirrors the online-panel pattern.
+aiBtn.addEventListener('click', () => {
+  mainMenu.style.display = 'none';
+  aiPanel.style.display = 'flex';
+});
+aiBack.addEventListener('click', () => {
+  aiPanel.style.display = 'none';
+  // Restore main-menu buttons in case a prior pause/gameover hid them.
+  localBtn.textContent = 'LOCAL';
+  localBtn.style.display = '';
+  aiBtn.style.display = '';
+  onlineBtn.style.display = '';
+  mainMenu.style.display = 'flex';
+});
+
+// ── Local AI mode ─────────────────────────────────────────────────────────────
+function lockSettingsForAi() {
+  // Force the in-browser settings to match what the model was trained on so
+  // performance is predictable. These are hidden from the user while AI mode
+  // is active — no accidental mid-game tuning.
+  lenSl.value = '4';        lenV.textContent  = '4';
+  bSpdSl.value = '3';       bSpdV.textContent = '3';
+  snakeMultiplier = 2;
+  multGroup.querySelectorAll('.mult-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.mult) === 2));
+  if (powerupsEnabled) {
+    powerupsEnabled = false;
+    puToggle.classList.remove('active');
+    puToggle.textContent = 'OFF';
+    buildLegend();
+  }
+  settingsBtn.style.display = 'none';
+}
+
+// Tier picker: clicking a difficulty button loads that model (if not
+// already loaded) and starts a game immediately. No separate Play button.
+async function _loadAndPlayVariant(variant, btn) {
+  if (aiLoading) return;
+  aiVariant = variant;
+  // Visual: clear other actives, add 'loading' to the one we're about to load.
+  aiVariantGroup.querySelectorAll('.ai-variant-btn').forEach(b => {
+    b.classList.toggle('active', b === btn);
+    b.classList.remove('loading');
+  });
+  const needReload = !aiLocal || aiLoadedVariant !== aiVariant;
+  if (needReload) {
+    aiLoading = true;
+    btn.classList.add('loading');
+    const originalText = btn.textContent;
+    btn.textContent = 'LOADING…';
+    try {
+      aiLocal = new LocalAI();
+      await aiLocal.load(
+        `/models/snake-pong-${aiVariant}.onnx`,
+        `/models/snake-pong-${aiVariant}.json`,
+      );
+      aiLoadedVariant = aiVariant;
+    } catch (e) {
+      console.error('[ai-local] load failed:', e);
+      btn.textContent = 'LOAD FAILED';
+      btn.classList.remove('loading');
+      btn.title = String(e && e.message || e);
+      ovMsg.textContent = `AI LOAD FAILED: ${String(e && e.message || e).slice(0, 200)}`;
+      aiLoading = false;
+      return;
+    }
+    aiLoading = false;
+    btn.textContent = originalText;
+    btn.classList.remove('loading');
+  }
+  aiLocalMode = true;
+  aiPendingDir = null;
+  aiLocal.reset();
+  lockSettingsForAi();
+  startGame();
+}
+
+aiVariantGroup.addEventListener('click', e => {
+  const btn = e.target.closest('.ai-variant-btn');
+  if (!btn) return;
+  _loadAndPlayVariant(btn.dataset.variant, btn);
 });
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────

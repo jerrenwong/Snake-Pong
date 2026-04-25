@@ -1,5 +1,4 @@
-import { CELL, COLS, ROWS, W, H, WALL_L, WALL_R } from './constants.js';
-// WALL_L / WALL_R are kept for the background half-tint only (no longer death barriers)
+import { CELL, COLS, ROWS, W, H } from './constants.js';
 import { POWERUP_DEFS } from './powerups.js';
 
 function buildBackground(ctx) {
@@ -14,12 +13,6 @@ function buildBackground(ctx) {
   for (let r = 0; r <= ROWS; r++) {
     ctx.beginPath(); ctx.moveTo(0, r * CELL); ctx.lineTo(W, r * CELL); ctx.stroke();
   }
-
-  ctx.fillStyle = 'rgba(0, 160, 255, 0.03)';
-  ctx.fillRect(0, 0, WALL_L * CELL, H);
-
-  ctx.fillStyle = 'rgba(255, 100, 0, 0.03)';
-  ctx.fillRect(WALL_R * CELL, 0, W - WALL_R * CELL, H);
 }
 
 function drawSnake(ctx, snake) {

@@ -1,0 +1,15 @@
+{
+  "source_checkpoint": "rl/runs/v5/best.pt",
+  "arch": "dueling",
+  "head": null,
+  "reduce": null,
+  "snake_length": 4,
+  "snake_multiplier": 2,
+  "interp_ball_obs": true,
+  "hidden_size": 256,
+  "obs_dim": 20,
+  "n_actions": 4,
+  "input_name": "obs",
+  "output_name": "q",
+  "description": "dueling, L=4, mult=2"
+}

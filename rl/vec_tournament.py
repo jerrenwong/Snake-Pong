@@ -30,6 +30,138 @@ from .vec_rollout_gpu import _build_obs_batch_gpu, _mirror_action_tensor
 
 
 @torch.no_grad()
+def _legal_mask_ego_subset(
+    vec: TorchVectorSnakePongGame,
+    sides: torch.Tensor,      # (K,) int64 in {1, 2}
+    idx: torch.Tensor,        # (K,) int64 global env indices of these slots
+    mirror_t: torch.Tensor,   # (4,) int64 mirror table
+) -> torch.Tensor:
+    """Returns (K, 4) bool — True where the ego action is non-fatal.
+
+    Same geometric check used by the argmax-masking helper, but returns the
+    raw legality mask so a stochastic sampler (Categorical) can mask its
+    logits before sampling, keeping PPO's log-prob math consistent with the
+    effective policy.
+    """
+    K = sides.shape[0]
+    device = sides.device
+    L = vec.snake_length
+    action_deltas = torch.tensor(
+        [[0, -1], [0, 1], [-1, 0], [1, 0]], dtype=torch.int32, device=device,
+    )
+
+    own_idx = (sides - 1).to(torch.int64)
+    is_side2 = sides == 2
+    bodies = vec.bodies[idx]
+    dirs = vec.dirs[idx]
+
+    own_body = bodies.gather(
+        1, own_idx.view(-1, 1, 1, 1).expand(-1, 1, L, 2),
+    ).squeeze(1)
+    opp_body = bodies.gather(
+        1, (1 - own_idx).view(-1, 1, 1, 1).expand(-1, 1, L, 2),
+    ).squeeze(1)
+    own_head = own_body[:, 0, :]
+    own_dir = dirs.gather(
+        1, own_idx.view(-1, 1, 1).expand(-1, 1, 2),
+    ).squeeze(1)
+
+    ego_range = torch.arange(4, device=device)
+    real_action = torch.where(
+        is_side2.view(-1, 1), mirror_t[ego_range].view(1, -1).expand(K, 4),
+        ego_range.view(1, -1).expand(K, 4),
+    )
+    real_delta = action_deltas[real_action]
+    is_reverse = ((real_delta[..., 0] == -own_dir[:, 0:1]) &
+                  (real_delta[..., 1] == -own_dir[:, 1:2]))
+    effective = torch.where(
+        is_reverse.unsqueeze(-1),
+        own_dir.unsqueeze(1).expand(-1, 4, -1),
+        real_delta,
+    )
+    new_head = own_head.unsqueeze(1) + effective
+
+    oob = ((new_head[..., 0] < 0) | (new_head[..., 0] >= COLS) |
+           (new_head[..., 1] < 0) | (new_head[..., 1] >= ROWS))
+    own_block = own_body[:, :-1, :]
+    self_hit = ((new_head.unsqueeze(2) == own_block.unsqueeze(1))
+                .all(dim=-1).any(dim=-1))
+    opp_hit = ((new_head.unsqueeze(2) == opp_body.unsqueeze(1))
+               .all(dim=-1).any(dim=-1))
+    return ~(oob | self_hit | opp_hit)                             # legal = True
+
+
+@torch.no_grad()
+def _safety_mask_ego_subset(
+    q: torch.Tensor,          # (K, 4) — raw Q/logits for ego actions of K slots
+    vec: TorchVectorSnakePongGame,
+    sides: torch.Tensor,      # (K,) int64 in {1, 2}
+    idx: torch.Tensor,        # (K,) int64 global env indices of these slots
+    mirror_t: torch.Tensor,   # (4,) int64 mirror table
+) -> torch.Tensor:
+    """Mask out ego actions that would immediately kill the acting snake.
+
+    Mirrors src/ai_local.js `_legalActionsP2` but GPU-batched and side-aware.
+    `idx` picks the K slots out of vec's full N-env state so this works on
+    any subset (e.g. one model's share of the tournament slots).
+
+    Returns (K,) — argmax(q) restricted to legal actions. If every action for
+    a slot is fatal, falls back to raw argmax (doomed regardless).
+    """
+    K = q.shape[0]
+    device = q.device
+    L = vec.snake_length
+    action_deltas = torch.tensor(
+        [[0, -1], [0, 1], [-1, 0], [1, 0]], dtype=torch.int32, device=device,
+    )  # (4, 2)
+
+    own_idx = (sides - 1).to(torch.int64)      # (K,) 0 or 1
+    is_side2 = sides == 2
+    bodies = vec.bodies[idx]                    # (K, 2, L, 2)
+    dirs = vec.dirs[idx]                        # (K, 2, 2)
+
+    own_body = bodies.gather(
+        1, own_idx.view(-1, 1, 1, 1).expand(-1, 1, L, 2),
+    ).squeeze(1)                                 # (K, L, 2)
+    opp_body = bodies.gather(
+        1, (1 - own_idx).view(-1, 1, 1, 1).expand(-1, 1, L, 2),
+    ).squeeze(1)                                 # (K, L, 2)
+    own_head = own_body[:, 0, :]                 # (K, 2)
+    own_dir = dirs.gather(
+        1, own_idx.view(-1, 1, 1).expand(-1, 1, 2),
+    ).squeeze(1)                                 # (K, 2)
+
+    ego_range = torch.arange(4, device=device)
+    real_action = torch.where(
+        is_side2.view(-1, 1), mirror_t[ego_range].view(1, -1).expand(K, 4),
+        ego_range.view(1, -1).expand(K, 4),
+    )                                             # (K, 4)
+    real_delta = action_deltas[real_action]       # (K, 4, 2)
+
+    is_reverse = ((real_delta[..., 0] == -own_dir[:, 0:1]) &
+                  (real_delta[..., 1] == -own_dir[:, 1:2]))
+    effective = torch.where(
+        is_reverse.unsqueeze(-1),
+        own_dir.unsqueeze(1).expand(-1, 4, -1),
+        real_delta,
+    )                                              # (K, 4, 2)
+    new_head = own_head.unsqueeze(1) + effective   # (K, 4, 2)
+
+    oob = ((new_head[..., 0] < 0) | (new_head[..., 0] >= COLS) |
+           (new_head[..., 1] < 0) | (new_head[..., 1] >= ROWS))
+
+    own_block = own_body[:, :-1, :]                # (K, L-1, 2)
+    self_hit = ((new_head.unsqueeze(2) == own_block.unsqueeze(1))
+                .all(dim=-1).any(dim=-1))
+    opp_hit = ((new_head.unsqueeze(2) == opp_body.unsqueeze(1))
+               .all(dim=-1).any(dim=-1))
+    illegal = oob | self_hit | opp_hit
+    q_masked = q.masked_fill(illegal, float("-inf"))
+    all_illegal = illegal.all(dim=1)
+    return torch.where(all_illegal, q.argmax(dim=1), q_masked.argmax(dim=1))
+
+
+@torch.no_grad()
 def run_tournament(
     models: Dict[str, nn.Module],
     games_per_pair: int = 50,
@@ -40,6 +172,7 @@ def run_tournament(
     device: str | torch.device = "cuda",
     seed: int = 12345,
     show_progress: bool = True,
+    safety_filter: bool = False,
 ) -> dict:
     """Run a full M × M tournament. Returns dict with keys:
       'names', 'wins', 'losses', 'draws', 'win_rate' (all M×M arrays).
@@ -83,9 +216,11 @@ def run_tournament(
     model_list = [models[n] for n in names]
     mirror_t = _mirror_action_tensor(device)
 
-    def _act_all(obs_all: torch.Tensor, which: str) -> torch.Tensor:
+    def _act_all(obs_all: torch.Tensor, which: str, sides: torch.Tensor) -> torch.Tensor:
         """For each unique model, do a batched forward on its subset of slots,
-        scatter actions back. `which` = 'learner' or 'opp'.
+        scatter actions back. `which` = 'learner' or 'opp'. `sides` is the
+        (N,) tensor of which snake side this actor is playing — needed for
+        the optional safety filter (reuses vec.bodies / vec.dirs).
         """
         masks = learner_masks if which == "learner" else opp_masks
         actions = torch.zeros(N, dtype=torch.int64, device=device)
@@ -96,9 +231,12 @@ def run_tournament(
             sub_obs = obs_all[mask]
             q = model(sub_obs)
             if q.dim() == 3:
-                # Bootstrapped: mean-reduce heads by default.
                 q = q.mean(dim=1)
-            a = q.argmax(dim=1)
+            if safety_filter:
+                idx = mask.nonzero(as_tuple=False).squeeze(1)
+                a = _safety_mask_ego_subset(q, vec, sides[mask], idx, mirror_t)
+            else:
+                a = q.argmax(dim=1)
             actions[mask] = a
         return actions
 
@@ -112,8 +250,8 @@ def run_tournament(
         opp_sides = 3 - learner_sides
         opp_obs = _build_obs_batch_gpu(vec, opp_sides, interp_ball)
 
-        learner_a_ego = _act_all(learner_obs, "learner")
-        opp_a_ego = _act_all(opp_obs, "opp")
+        learner_a_ego = _act_all(learner_obs, "learner", learner_sides)
+        opp_a_ego = _act_all(opp_obs, "opp", opp_sides)
 
         # Egocentric → real-board
         learner_real = torch.where(

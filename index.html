@@ -229,7 +229,7 @@
     #start-btn:hover { background: #0ff; color: #000; }
 
     /* ── Online panel ────────────────────────────────────────── */
-    #online-btn {
+    #ai-local-btn {
       background: transparent;
       border: 1px solid #2a2a2a;
       color: #555;
@@ -240,7 +240,116 @@
       cursor: pointer;
       transition: border-color 0.12s, color 0.12s;
     }
-    #online-btn:hover { border-color: #0ff; color: #0ff; }
+    #ai-local-btn:hover { border-color: #0ff; color: #0ff; }
+    #ai-local-btn:disabled { opacity: 0.4; cursor: default; }
+
+    .ai-variant-btn {
+      background: transparent;
+      border: 1px solid #2a2a2a;
+      color: #555;
+      padding: 7px 18px;
+      font-family: inherit;
+      font-size: 0.82rem;
+      font-weight: bold;
+      letter-spacing: 0.12em;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+    .ai-variant-btn:hover { filter: brightness(1.4); }
+    .ai-variant-btn.active {
+      color: #000;
+      background: currentColor;
+    }
+    .ai-variant-btn.active > * { color: #000; }
+    /* Tier colors: green → yellow → orange → magenta for increasing difficulty. */
+    .ai-variant-btn.tier-easy   { border-color: #4a4; color: #6d6; }
+    .ai-variant-btn.tier-medium { border-color: #cc4; color: #ee6; }
+    .ai-variant-btn.tier-hard   { border-color: #e83; color: #fa5; }
+    .ai-variant-btn.tier-master { border-color: #c3c; color: #e5e; }
+    .ai-variant-btn.tier-insane {
+      border-color: #f33; color: #f88;
+      animation: insane-glow 1.6s ease-in-out infinite;
+    }
+    .ai-variant-btn.tier-easy.active   { background: #6d6; color: #031; }
+    .ai-variant-btn.tier-medium.active { background: #ee6; color: #330; }
+    .ai-variant-btn.tier-hard.active   { background: #fa5; color: #310; }
+    .ai-variant-btn.tier-master.active { background: #e5e; color: #303; }
+    .ai-variant-btn.tier-insane.active { background: #f44; color: #200; animation: none; }
+
+    /* AI difficulty panel (Step 2 — shown after clicking AI in main menu). */
+    #ai-panel {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      min-width: 260px;
+    }
+    #ai-panel h3 {
+      font-size: 0.9rem;
+      letter-spacing: 0.22em;
+      color: #777;
+      text-transform: uppercase;
+      text-align: center;
+    }
+    #ai-panel #ai-variant-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 260px;
+      align-items: stretch;
+    }
+    #ai-panel .ai-variant-btn {
+      width: 100%;
+      padding: 13px 24px;
+      font-size: 1rem;
+      letter-spacing: 0.18em;
+      text-align: center;
+    }
+    #ai-panel .ai-variant-btn.loading {
+      opacity: 0.5;
+      cursor: wait;
+    }
+    #ai-back {
+      background: transparent;
+      border: none;
+      color: #444;
+      font-family: inherit;
+      font-size: 0.8rem;
+      letter-spacing: 0.14em;
+      cursor: pointer;
+      transition: color 0.1s;
+      padding: 6px 0;
+      margin-top: 4px;
+    }
+    #ai-back:hover { color: #aaa; }
+
+    /* Main-menu mode buttons (LOCAL / ONLINE / AI) — same sizing as the AI
+       tier buttons so the two screens feel like one menu. */
+    #main-menu {
+      gap: 12px;
+      min-width: 260px;
+    }
+    #local-btn, #online-btn, #ai-btn {
+      width: 260px;
+      background: transparent;
+      border: 1px solid #2a2a2a;
+      color: #666;
+      padding: 13px 24px;
+      font-family: inherit;
+      font-size: 1rem;
+      font-weight: bold;
+      letter-spacing: 0.18em;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.12s, color 0.12s, background 0.12s;
+    }
+    #local-btn:hover, #online-btn:hover, #ai-btn:hover {
+      border-color: #0ff; color: #0ff;
+    }
+    @keyframes insane-glow {
+      0%, 100% { box-shadow: 0 0 0 #f33; }
+      50%      { box-shadow: 0 0 14px #f33; }
+    }
 
     #online-panel {
       display: none;
@@ -522,29 +631,37 @@
     <canvas id="game"></canvas>
     <div id="overlay">
 
-      <!-- Main menu (start / pause / gameover) -->
+      <!-- Step 1: mode picker (LOCAL / ONLINE / AI) -->
       <div id="main-menu">
         <h2 id="ov-title">SNAKE PONG</h2>
         <p id="ov-msg">Deflect the ball past your opponent.<br>Avoid the walls. Snakes can cross the centre.</p>
-        <button id="start-btn">START GAME</button>
-        <button id="online-btn">PLAY ONLINE</button>
+        <button id="local-btn">LOCAL</button>
+        <button id="online-btn">ONLINE</button>
+        <button id="ai-btn">AI</button>
+      </div>
+
+      <!-- Step 2: AI difficulty picker. Clicking a tier loads that model
+           and starts the game immediately — no separate Play button. -->
+      <div id="ai-panel">
+        <h3>CHOOSE DIFFICULTY</h3>
+        <div id="ai-variant-group">
+          <button class="ai-variant-btn tier-easy"   data-variant="easy">EASY</button>
+          <button class="ai-variant-btn tier-medium" data-variant="medium">MEDIUM</button>
+          <button class="ai-variant-btn tier-hard"   data-variant="hard">HARD</button>
+          <button class="ai-variant-btn tier-master" data-variant="master">MASTER</button>
+          <button class="ai-variant-btn tier-insane" data-variant="insane">INSANE</button>
+        </div>
+        <!-- #ai-local-btn is retained (hidden) because the existing load
+             code path in main.js uses it as the progress label. Click-to-
+             play is driven from the tier button instead. -->
+        <button id="ai-local-btn" style="display:none;">PLAY</button>
+        <button id="ai-back">← BACK</button>
       </div>
 
       <!-- Online mode panel -->
       <div id="online-panel">
         <h3>Online Multiplayer</h3>
         <p id="online-status"></p>
-
-        <div id="ai-head-picker" style="margin: 8px 0; display: flex; gap: 6px; align-items: center; justify-content: center;">
-          <span style="opacity:0.7">AI head:</span>
-          <select id="ai-head-sel" style="background:#222; color:#fff; border:1px solid #444; padding:4px;">
-            <option value="4" selected>h4 (strongest, 82%)</option>
-            <option value="3">h3 (55%)</option>
-            <option value="0">h0 (43%)</option>
-            <option value="2">h2 (39%)</option>
-            <option value="1">h1 (33%)</option>
-          </select>
-        </div>
 
         <button id="host-btn">HOST GAME</button>
         <div id="room-code-wrap">
