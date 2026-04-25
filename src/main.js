@@ -3,7 +3,7 @@ import { registerInput }                                  from './input.js';
 import { createSnakes, createBall,
          stepSnake, snakeHitsDeath, snakesCollide, stepBall,
          getBallTps }                                     from './logic.js';
-import { startBgm, stopBgm, pauseBgm, resumeBgm,
+import { startBgm, stopBgm, pauseBgm, resumeBgm, setBgmStyle,
          sfxBallHit, sfxScore, sfxDeath, sfxWin,
          sfxPowerup }                                     from './audio.js';
 import { POWERUP_DEFS, spawnPowerup,
@@ -51,6 +51,8 @@ const aiVariantGroup = document.getElementById('ai-variant-group');
 const aiBtn       = document.getElementById('ai-btn');
 const aiPanel     = document.getElementById('ai-panel');
 const aiBack      = document.getElementById('ai-back');
+const celebrationContinue = document.getElementById('celebration-continue');
+const celebrationBack     = document.getElementById('celebration-back');
 
 // Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
@@ -95,6 +97,12 @@ let aiInferring      = false;    // prevent overlapping inference calls
 let aiPendingDir     = null;     // latest {dx,dy} from AI — consumed on next tick
 let aiVariant        = 'hard';  // default tier; updated by ai-variant-btn
 let aiLoadedVariant  = null;     // which variant is currently loaded in aiLocal
+// Boss tier — unlocked the first time the player beats INSANE. State is
+// persisted in localStorage so the unlock survives a reload. While
+// `bossModeActive` is true the score has no cap; play continues forever.
+let bossUnlocked     = (typeof localStorage !== 'undefined' &&
+                        localStorage.getItem('snakepong_boss_unlocked') === '1');
+let bossModeActive   = false;
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 
@@ -286,6 +294,8 @@ function awardPoint(player) {
   if (player === 1) score1++; else score2++;
   p1Pts.textContent = score1;
   p2Pts.textContent = score2;
+  // Boss mode: scores keep climbing forever; no win condition.
+  if (bossModeActive) { endRound(); return; }
   const win = parseInt(winSl.value);
   if (score1 >= win || score2 >= win) endGame(score1 >= win ? 1 : 2);
   else endRound();
@@ -357,6 +367,13 @@ function buildLegend() {
 function startGame() {
   score1 = 0; score2 = 0;
   p1Pts.textContent = 0; p2Pts.textContent = 0;
+  // Pick the BGM style BEFORE starting the loop so the new music style takes
+  // effect on the very first scheduled note instead of waiting ~6s for the
+  // next 16-beat loop boundary.
+  if (aiLocalMode && aiLoadedVariant === 'insane') setBgmStyle('intense');
+  else if (aiLocalMode && aiLoadedVariant === 'boss') setBgmStyle('celebration');
+  else setBgmStyle('normal');
+  stopBgm();
   startBgm();
   startRound();
 }
@@ -364,7 +381,30 @@ function startGame() {
 function startRound() {
   ballTickMs = 1000 / getBallTps(parseInt(bSpdSl.value));
   tickMs     = ballTickMs / snakeMultiplier;
-  const { s1: ns1, s2: ns2 } = createSnakes(parseInt(lenSl.value));
+  const { s1: ns1, s2: ns2 } = createSnakes(parseInt(lenSl.value),
+                                            snakeMultiplier === 3);
+  // Tint the AI's snake to match the difficulty-tier badge so the player
+  // can tell which model they're playing at a glance.
+  if (aiLocalMode && aiLoadedVariant) {
+    // Saturated tones in the same family as the default P1 #2af / P2 #f62.
+    const tierColors = {
+      easy:   '#2c2',  // deep green
+      medium: '#cc0',  // deep yellow
+      hard:   '#f72',  // deep orange (close to original)
+      master: '#c3c',  // deep magenta
+      insane: '#e22',  // deep red
+      boss:   '#fb0',  // deep gold
+    };
+    if (tierColors[aiLoadedVariant]) ns2.color = tierColors[aiLoadedVariant];
+    // Animated effects mirroring the tier button — only top tiers get them.
+    if (aiLoadedVariant === 'insane') ns2.effect = 'insane-glow';
+    else if (aiLoadedVariant === 'boss') ns2.effect = 'boss-shimmer';
+    // Tint the P2 scoreboard so it matches the AI's snake.
+    if (tierColors[aiLoadedVariant]) p2Pts.style.color = tierColors[aiLoadedVariant];
+  } else {
+    // Reset P2 scoreboard outside AI mode.
+    p2Pts.style.color = '';
+  }
   s1 = ns1; s1.speedMult = 1;
   s2 = ns2; s2.speedMult = 1;
   // Playing locally vs the AI: always serve from P1's side so the human
@@ -420,11 +460,76 @@ function endGame(winner) {
   stopBgm();
   sfxWin();
   pendingSfx.push('win');
+  // Special case: human (P1) just beat INSANE in local-AI mode → unlock BOSS
+  // and show a celebration overlay before the regular gameover screen.
+  if (winner === 1 && aiLocalMode && aiLoadedVariant === 'insane' && !bossUnlocked) {
+    bossUnlocked = true;
+    try { localStorage.setItem('snakepong_boss_unlocked', '1'); } catch (e) {}
+    _showBossUnlockCelebration();
+    if (onlineRole === 'host') sendState(winner);
+    return;
+  }
   ovTitle.textContent  = `PLAYER ${winner} WINS!`;
   ovMsg.textContent    = `Final score: ${score1} – ${score2}`;
   _showActionOnly('PLAY AGAIN');
   overlay.style.display = 'flex';
   if (onlineRole === 'host') sendState(winner);
+}
+
+// Sentence-by-sentence reveal of the boss-unlock celebration. Each sentence
+// fades in (0.9s), holds, then fades out and is replaced by the next. The
+// final sentence stays on screen and reveals the action buttons below.
+const _CELEBRATION_SENTENCES = [
+  'CONGRATULATIONS',
+  'NO HAND THAT SHAPED THIS WORLD<br>HAS WALKED THIS FAR.',
+  'A HIDDEN MONSTER<br>HAS BEEN UNLEASHED.',
+  'FEARLESS &nbsp; RESTLESS &nbsp; ENDLESS',
+  'AT 3 TIMES SPEED.',
+];
+const _CELEBRATION_HOLD_MS  = 4000;   // how long each sentence stays at full opacity
+const _CELEBRATION_FADE_MS  = 900;    // fade in / out duration (matches CSS transition)
+let _celebrationTimeouts = [];
+
+function _showBossUnlockCelebration() {
+  const cel = document.getElementById('boss-celebration');
+  const msg = document.getElementById('celebration-message');
+  const actions = document.getElementById('celebration-actions');
+  if (!cel || !msg || !actions) return;
+
+  _celebrationTimeouts.forEach(clearTimeout);
+  _celebrationTimeouts = [];
+  msg.style.opacity = 0;
+  actions.classList.remove('visible');
+  cel.style.display = 'flex';
+
+  function showSentence(idx) {
+    if (idx >= _CELEBRATION_SENTENCES.length) {
+      // After the last sentence has fully faded, present the FIGHT-THE-BOSS
+      // button as a fresh page (centred, message slot empty).
+      msg.innerHTML = '&nbsp;';
+      _celebrationTimeouts.push(setTimeout(() => {
+        actions.classList.add('visible');
+      }, _CELEBRATION_FADE_MS));
+      return;
+    }
+    msg.innerHTML = _CELEBRATION_SENTENCES[idx];
+    requestAnimationFrame(() => { msg.style.opacity = 1; });
+    _celebrationTimeouts.push(setTimeout(() => {
+      msg.style.opacity = 0;
+      _celebrationTimeouts.push(setTimeout(() => showSentence(idx + 1),
+                                            _CELEBRATION_FADE_MS));
+    }, _CELEBRATION_HOLD_MS));
+  }
+  showSentence(0);
+}
+
+function _hideBossUnlockCelebration() {
+  _celebrationTimeouts.forEach(clearTimeout);
+  _celebrationTimeouts = [];
+  const cel = document.getElementById('boss-celebration');
+  const actions = document.getElementById('celebration-actions');
+  if (actions) actions.classList.remove('visible');
+  if (cel) cel.style.display = 'none';
 }
 
 // ── Online: state serialisation ───────────────────────────────────────────────
@@ -734,13 +839,14 @@ aiBack.addEventListener('click', () => {
 // ── Local AI mode ─────────────────────────────────────────────────────────────
 function lockSettingsForAi() {
   // Force the in-browser settings to match what the model was trained on so
-  // performance is predictable. These are hidden from the user while AI mode
-  // is active — no accidental mid-game tuning.
+  // performance is predictable. BOSS uses mult=3 (its training config); all
+  // other tiers use mult=2.
+  const targetMult = bossModeActive ? 3 : 2;
   lenSl.value = '4';        lenV.textContent  = '4';
   bSpdSl.value = '3';       bSpdV.textContent = '3';
-  snakeMultiplier = 2;
+  snakeMultiplier = targetMult;
   multGroup.querySelectorAll('.mult-btn').forEach(b =>
-    b.classList.toggle('active', parseInt(b.dataset.mult) === 2));
+    b.classList.toggle('active', parseInt(b.dataset.mult) === targetMult));
   if (powerupsEnabled) {
     powerupsEnabled = false;
     puToggle.classList.remove('active');
@@ -756,16 +862,21 @@ async function _loadAndPlayVariant(variant, btn) {
   if (aiLoading) return;
   aiVariant = variant;
   // Visual: clear other actives, add 'loading' to the one we're about to load.
+  // `btn` may be null (e.g. when launched directly from the boss-celebration
+  // "FACE THE BOSS" button, which isn't part of the variant group).
   aiVariantGroup.querySelectorAll('.ai-variant-btn').forEach(b => {
-    b.classList.toggle('active', b === btn);
+    b.classList.toggle('active', btn !== null && b === btn);
     b.classList.remove('loading');
   });
   const needReload = !aiLocal || aiLoadedVariant !== aiVariant;
+  let originalText = '';
   if (needReload) {
     aiLoading = true;
-    btn.classList.add('loading');
-    const originalText = btn.textContent;
-    btn.textContent = 'LOADING…';
+    if (btn) {
+      btn.classList.add('loading');
+      originalText = btn.textContent;
+      btn.textContent = 'LOADING…';
+    }
     try {
       aiLocal = new LocalAI();
       await aiLocal.load(
@@ -775,16 +886,20 @@ async function _loadAndPlayVariant(variant, btn) {
       aiLoadedVariant = aiVariant;
     } catch (e) {
       console.error('[ai-local] load failed:', e);
-      btn.textContent = 'LOAD FAILED';
-      btn.classList.remove('loading');
-      btn.title = String(e && e.message || e);
+      if (btn) {
+        btn.textContent = 'LOAD FAILED';
+        btn.classList.remove('loading');
+        btn.title = String(e && e.message || e);
+      }
       ovMsg.textContent = `AI LOAD FAILED: ${String(e && e.message || e).slice(0, 200)}`;
       aiLoading = false;
       return;
     }
     aiLoading = false;
-    btn.textContent = originalText;
-    btn.classList.remove('loading');
+    if (btn) {
+      btn.textContent = originalText;
+      btn.classList.remove('loading');
+    }
   }
   aiLocalMode = true;
   aiPendingDir = null;
@@ -796,8 +911,32 @@ async function _loadAndPlayVariant(variant, btn) {
 aiVariantGroup.addEventListener('click', e => {
   const btn = e.target.closest('.ai-variant-btn');
   if (!btn) return;
+  // BOSS = mult=3, no win cap. Other tiers = normal mult=2 / standard win.
+  bossModeActive = btn.dataset.variant === 'boss';
   _loadAndPlayVariant(btn.dataset.variant, btn);
 });
+
+// Celebration overlay buttons. "FIGHT THE BOSS" launches the BOSS game
+// directly — boss is never offered in the regular tier picker.
+if (celebrationContinue) {
+  celebrationContinue.addEventListener('click', () => {
+    _hideBossUnlockCelebration();
+    bossModeActive = true;
+    _loadAndPlayVariant('boss', null);
+  });
+}
+if (celebrationBack) {
+  celebrationBack.addEventListener('click', () => {
+    _hideBossUnlockCelebration();
+    // Restore the regular main menu.
+    aiPanel.style.display = 'none';
+    localBtn.textContent = 'LOCAL';
+    localBtn.style.display = '';
+    aiBtn.style.display = '';
+    onlineBtn.style.display = '';
+    mainMenu.style.display = 'flex';
+  });
+}
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 buildLegend();

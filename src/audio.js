@@ -49,18 +49,30 @@ function tone(freq, startTime, durationSec, type = 'square', vol = 0.15, dest = 
 
 const SEMITONES = { C:-9, 'C#':-8, D:-7, 'D#':-6, E:-5, F:-4, 'F#':-3, G:-2, 'G#':-1, A:0, 'A#':1, B:2 };
 
-function hz(name) {
+function hz(name, transpose = 0) {
   const m = name.match(/^([A-G]#?)(\d)$/);
   if (!m) return 0;
-  return 440 * 2 ** ((SEMITONES[m[1]] + (parseInt(m[2]) - 4) * 12) / 12);
+  return 440 * 2 ** ((SEMITONES[m[1]] + (parseInt(m[2]) - 4) * 12 + transpose) / 12);
 }
 
 // ── Background music ──────────────────────────────────────────────────────────
 // 4-bar loop, I–V–vi–IV in C major (C–G–Am–F), 155 BPM.
 // Each entry: [ noteName, beatOffset, durationBeats ]
 
-const BPM      = 155;
-const BEAT     = 60 / BPM;
+// BGM style modulates tempo, key, and instrument timbre without changing the
+// underlying melody/bass patterns.
+//   normal       — 155 BPM, C major,  square+triangle (default)
+//   intense      — 200 BPM, A minor (-3 semitones), sawtooth lead, dirty bass
+//   celebration  — 195 BPM, E major  (+4 semitones), bright square + extra
+//                  high-octave doubling for a fanfare feel
+let bgmStyle = 'normal';
+
+const STYLES = {
+  normal:      { bpm: 155, transpose:  0, leadType: 'square',   bassType: 'triangle', leadVol: 0.07, bassVol: 0.11, double: false },
+  intense:     { bpm: 200, transpose: -3, leadType: 'sawtooth', bassType: 'square',   leadVol: 0.09, bassVol: 0.14, double: false },
+  celebration: { bpm: 195, transpose:  4, leadType: 'square',   bassType: 'triangle', leadVol: 0.07, bassVol: 0.10, double: true  },
+};
+
 const LOOP_LEN = 16; // beats (4 bars × 4 beats)
 
 const MELODY = [
@@ -95,8 +107,9 @@ const BASS = [
 // Rhythmic hi-hat / pulse using white noise for a subtle percussion feel
 function schedulePercussion(startTime) {
   const c = getCtx();
+  const beat = 60 / STYLES[bgmStyle].bpm;
   for (let i = 0; i < LOOP_LEN * 2; i++) {     // 8th-note pulses
-    const t    = startTime + i * BEAT * 0.5;
+    const t    = startTime + i * beat * 0.5;
     const dur  = 0.04;
     const buf  = c.createBuffer(1, c.sampleRate * dur, c.sampleRate);
     const data = buf.getChannelData(0);
@@ -105,9 +118,11 @@ function schedulePercussion(startTime) {
     src.buffer = buf;
     const g = c.createGain();
     // Accent on beats 1 and 3 of each bar
-    const beat = i * 0.5;
-    const accent = (beat % 4 === 0 || beat % 4 === 2);
-    g.gain.setValueAtTime(accent ? 0.04 : 0.018, t);
+    const bidx = i * 0.5;
+    const accent = (bidx % 4 === 0 || bidx % 4 === 2);
+    const accentVol = bgmStyle === 'intense' ? 0.07 : (bgmStyle === 'celebration' ? 0.05 : 0.04);
+    const offVol    = bgmStyle === 'intense' ? 0.03 : 0.018;
+    g.gain.setValueAtTime(accent ? accentVol : offVol, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     src.connect(g);
     g.connect(bgmGain || master);
@@ -119,17 +134,29 @@ function schedulePercussion(startTime) {
 function scheduleLoop(startTime) {
   if (!bgmOn) return;
 
-  for (const [note, beat, dur] of MELODY) {
-    tone(hz(note), startTime + beat * BEAT, dur * BEAT, 'square', 0.07, bgmGain);
+  const cfg = STYLES[bgmStyle] || STYLES.normal;
+  const beat = 60 / cfg.bpm;
+  for (const [note, b, dur] of MELODY) {
+    tone(hz(note, cfg.transpose), startTime + b * beat, dur * beat, cfg.leadType, cfg.leadVol, bgmGain);
+    if (cfg.double) {
+      // Octave-up doubling for celebration mode — adds a bright triangle layer.
+      tone(hz(note, cfg.transpose + 12), startTime + b * beat, dur * beat, 'triangle', cfg.leadVol * 0.6, bgmGain);
+    }
   }
-  for (const [note, beat, dur] of BASS) {
-    tone(hz(note), startTime + beat * BEAT, dur * BEAT, 'triangle', 0.11, bgmGain);
+  for (const [note, b, dur] of BASS) {
+    tone(hz(note, cfg.transpose), startTime + b * beat, dur * beat, cfg.bassType, cfg.bassVol, bgmGain);
   }
   schedulePercussion(startTime);
 
   // Reschedule 300 ms before this loop ends to ensure seamless looping
-  const loopSec = LOOP_LEN * BEAT;
+  const loopSec = LOOP_LEN * beat;
   bgmLoop = setTimeout(() => scheduleLoop(startTime + loopSec), (loopSec - 0.3) * 1000);
+}
+
+export function setBgmStyle(style) {
+  // Switch the modulation. Takes effect on the *next* scheduled loop —
+  // already-scheduled notes will play out under the previous style.
+  if (style in STYLES) bgmStyle = style;
 }
 
 export function startBgm() {

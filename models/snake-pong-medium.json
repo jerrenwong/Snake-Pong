@@ -1,7 +1,7 @@
 {
-  "source_checkpoint": "rl/runs/v9/play_h4_final.pt",
-  "arch": "bootstrapped",
-  "head": 4,
+  "source_checkpoint": "rl/runs/v5/best.pt",
+  "arch": "dueling",
+  "head": null,
   "reduce": null,
   "snake_length": 4,
   "snake_multiplier": 2,
@@ -11,5 +11,5 @@
   "n_actions": 4,
   "input_name": "obs",
   "output_name": "q",
-  "description": "bootstrapped_h4, L=4, mult=2"
+  "description": "dueling, L=4, mult=2"
 }

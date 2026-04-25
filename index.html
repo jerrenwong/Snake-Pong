@@ -275,6 +275,136 @@
     .ai-variant-btn.tier-hard.active   { background: #fa5; color: #310; }
     .ai-variant-btn.tier-master.active { background: #e5e; color: #303; }
     .ai-variant-btn.tier-insane.active { background: #f44; color: #200; animation: none; }
+    /* BOSS tier — gold rainbow, only revealed after the player beats INSANE. */
+    .ai-variant-btn.tier-boss {
+      border-color: #fc3; color: #fe6;
+      background: linear-gradient(90deg,#430,#741,#a72,#fb4,#a72,#741,#430);
+      background-size: 300% 100%;
+      animation: boss-shimmer 3s linear infinite;
+    }
+    .ai-variant-btn.tier-boss.active { color: #100; }
+    @keyframes boss-shimmer {
+      0%   { background-position: 0%   50%; }
+      100% { background-position: 300% 50%; }
+    }
+
+    /* BOSS unlock celebration overlay — sentence-by-sentence reveal in
+       gold ember style (cf. the reference design). */
+    #boss-celebration {
+      display: none;
+      position: absolute;
+      inset: 0;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #0a0a0a;
+      z-index: 50;
+      overflow: hidden;
+    }
+    #boss-celebration .secret-frame {
+      position: relative;  /* anchor for absolutely-positioned action page */
+      text-align: center;
+      padding: 2.5rem 3rem;
+      border: 1px solid rgba(255, 200, 100, 0.25);
+      background: radial-gradient(circle at center, rgba(40, 20, 0, 0.5), transparent 70%);
+      animation: ember-breathe 5s ease-in-out infinite;
+      /* Fixed size so the frame doesn't jiggle as text length changes. */
+      width: 600px;
+      max-width: 92vw;
+      height: 320px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    #boss-celebration .message {
+      color: #ffd47a !important;
+      font-size: 1.25rem !important;
+      line-height: 2 !important;
+      letter-spacing: 0.18em;
+      max-width: none !important;
+      width: 100%;
+      text-align: center;
+      text-shadow:
+        0 0 8px rgba(255, 200, 100, 0.7),
+        0 0 18px rgba(255, 150, 50, 0.45),
+        0 0 36px rgba(255, 100, 0, 0.25);
+      transition: opacity 0.9s ease;
+      opacity: 0;
+      animation: ember-flicker 7s infinite;
+    }
+    /* Actions live as their own "page": absolutely positioned over the same
+       centred slot the message uses, hidden until the last sentence fades. */
+    #celebration-actions {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.9s ease;
+    }
+    #celebration-actions.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #celebration-continue {
+      background: transparent;
+      border: 1px solid rgba(255, 200, 100, 0.6);
+      color: #ffd47a;
+      padding: 10px 28px;
+      font-family: inherit;
+      font-size: 0.85rem;
+      letter-spacing: 0.22em;
+      cursor: pointer;
+      text-shadow: 0 0 10px rgba(255, 180, 80, 0.5);
+      transition: all 0.15s;
+    }
+    #celebration-continue:hover {
+      background: rgba(255, 200, 100, 0.1);
+      border-color: rgba(255, 200, 100, 1);
+    }
+    #celebration-back {
+      background: transparent;
+      border: none;
+      color: rgba(255, 200, 100, 0.3);
+      font-family: inherit;
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      cursor: pointer;
+      padding: 4px 0;
+    }
+    #celebration-back:hover { color: rgba(255, 200, 100, 0.7); }
+    @keyframes ember-breathe {
+      0%, 100% { border-color: rgba(255, 200, 100, 0.25); }
+      50%      { border-color: rgba(255, 200, 100, 0.55); }
+    }
+    @keyframes ember-flicker {
+      0%, 95%, 100% { filter: none; }
+      96%           { filter: brightness(0.78); }
+      97%           { filter: none; }
+      98%           { filter: brightness(0.85); }
+      99%           { filter: none; }
+    }
+    /* unused legacy classes kept as no-ops so any stale refs don't break. */
+    .celebration-headline, .celebration-tagline, .celebration-subline { display: none; }
+    .confetti-host, .confetti { display: none !important; }
+    .confetti:nth-child(4)  { left: 34%; animation-delay: 1.2s;  color:#fc3; }
+    .confetti:nth-child(5)  { left: 44%; animation-delay: 0.2s;  color:#fa3; }
+    .confetti:nth-child(6)  { left: 56%; animation-delay: 0.6s;  color:#fd6; }
+    .confetti:nth-child(7)  { left: 64%; animation-delay: 1.0s;  color:#fc3; }
+    .confetti:nth-child(8)  { left: 72%; animation-delay: 1.6s;  color:#f80; }
+    .confetti:nth-child(9)  { left: 80%; animation-delay: 0.5s;  color:#ff5; }
+    .confetti:nth-child(10) { left: 87%; animation-delay: 1.4s;  color:#fa3; }
+    .confetti:nth-child(11) { left: 92%; animation-delay: 0.9s;  color:#fd6; }
+    .confetti:nth-child(12) { left: 96%; animation-delay: 1.8s;  color:#fc3; }
+    @keyframes confetti-fall {
+      0%   { transform: translateY(-20px) rotate(0deg);   opacity: 1; }
+      100% { transform: translateY(420px) rotate(720deg); opacity: 0; }
+    }
 
     /* AI difficulty panel (Step 2 — shown after clicking AI in main menu). */
     #ai-panel {
@@ -630,6 +760,17 @@
   <div id="canvas-wrap">
     <canvas id="game"></canvas>
     <div id="overlay">
+
+      <!-- BOSS unlock celebration — sentence-by-sentence reveal in gold. -->
+      <div id="boss-celebration">
+        <div class="secret-frame">
+          <p class="message" id="celebration-message">&nbsp;</p>
+          <div id="celebration-actions">
+            <button id="celebration-continue">FIGHT THE BOSS</button>
+            <button id="celebration-back">↩ back to menu</button>
+          </div>
+        </div>
+      </div>
 
       <!-- Step 1: mode picker (LOCAL / ONLINE / AI) -->
       <div id="main-menu">

@@ -15,17 +15,51 @@ function buildBackground(ctx) {
   }
 }
 
-function drawSnake(ctx, snake) {
+function drawSnake(ctx, snake, now = 0) {
   const body = snake.body;
   const n    = body.length;
-  ctx.fillStyle = snake.color;
+
+  // Per-segment fill colour. For most snakes this is a constant; the
+  // INSANE-tier and BOSS-tier AI use animated effects matching their button.
+  let segFill = (i) => snake.color;
+
+  if (snake.effect === 'insane-glow') {
+    // Mirror the .tier-insane CSS animation (1.6s ease pulse). Pulses an
+    // outer red shadow around every segment.
+    const pulse = 0.5 - 0.5 * Math.cos((now / 1600) * 2 * Math.PI);
+    ctx.shadowColor = '#f33';
+    ctx.shadowBlur = pulse * 14;
+  } else if (snake.effect === 'boss-shimmer') {
+    // True metallic gold: a continuous horizontal gradient set on the canvas
+    // context, scrolling 2 × W over a 3 s period so the highlight band sweeps
+    // across the snake. All segments share the same gradient → smooth
+    // interpolation between segments rather than the previous palette steps.
+    const phase = (now / 3000) % 1;
+    const offset = phase * W;
+    const grad = ctx.createLinearGradient(-W + offset, 0, W + offset, 0);
+    grad.addColorStop(0.00, '#3a2a00');
+    grad.addColorStop(0.20, '#7a5800');
+    grad.addColorStop(0.45, '#c89500');
+    grad.addColorStop(0.55, '#ffe27a'); // peak highlight
+    grad.addColorStop(0.65, '#c89500');
+    grad.addColorStop(0.85, '#7a5800');
+    grad.addColorStop(1.00, '#3a2a00');
+    segFill = () => grad;
+    // Pulsing gold halo.
+    const pulse = 0.5 + 0.5 * Math.sin(now / 400);
+    ctx.shadowColor = '#fc3';
+    ctx.shadowBlur = 6 + pulse * 8;
+  }
+
   for (let i = 0; i < n; i++) {
     const t = i / n;
     ctx.globalAlpha = i === 0 ? 1 : Math.max(0.25, 1 - t * 0.75);
+    ctx.fillStyle = segFill(i);
     const seg = body[i];
     ctx.fillRect(seg.x * CELL + 2, seg.y * CELL + 2, CELL - 4, CELL - 4);
   }
   ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
 
   // Eyes
   const h  = body[0];
@@ -145,8 +179,8 @@ export function createRenderer(canvas) {
     }
 
     drawPowerups(powerups, now);
-    drawSnake(ctx, s1);
-    drawSnake(ctx, s2);
+    drawSnake(ctx, s1, now);
+    drawSnake(ctx, s2, now);
 
     const bx = ball.x * CELL + CELL / 2;
     const by = ball.y * CELL + CELL / 2;

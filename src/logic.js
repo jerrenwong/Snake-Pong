@@ -2,8 +2,11 @@ import { COLS, ROWS, WALL_L, WALL_R } from './constants.js';
 
 // ── Entity factories ──────────────────────────────────────────────────────────
 
-export function createSnakes(len) {
-  const hy  = Math.floor(ROWS / 2);
+// `liftStart` shifts the spawn row 1 cell upward — used for 3× speed where
+// the default centre row leaves too little room to react before the next
+// snake substep, sometimes pushing the player's snake straight to the back.
+export function createSnakes(len, liftStart = false) {
+  const hy  = Math.floor(ROWS / 2) - (liftStart ? 1 : 0);
   const h1x = Math.floor(WALL_L / 2);
   const h2x = WALL_R + Math.floor((COLS - WALL_R) / 2);
 

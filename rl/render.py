@@ -9,8 +9,31 @@ from typing import Callable, Optional
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .env import COLS, ROWS, SnakePongGame
-from .gym_env import SnakePongSelfPlayEnv, _build_obs
+from .env import ACTION_DELTAS, COLS, ROWS, Snake, SnakePongGame
+from .gym_env import SnakePongSelfPlayEnv, _MIRROR_ACTION, _build_obs
+
+
+def _legal_ego_mask(own: Snake, opp: Snake, side: int) -> list[bool]:
+    """For the four ego actions {0=up,1=down,2=left,3=right}, return which
+    ones would NOT immediately kill `own`. Same check applied in the
+    browser's safety filter and during GPU-batched evaluation."""
+    head_x, head_y = own.body[0]
+    cur_dx, cur_dy = own.dx, own.dy
+    own_block = set(own.body[:-1])  # tail vacates next step
+    opp_block = set(opp.body)
+    legal = [False, False, False, False]
+    for ego in range(4):
+        real = ego if side == 1 else _MIRROR_ACTION[ego]
+        rdx, rdy = ACTION_DELTAS[real]
+        if (rdx, rdy) == (-cur_dx, -cur_dy):
+            rdx, rdy = cur_dx, cur_dy  # engine ignores reversal
+        nh = (head_x + rdx, head_y + rdy)
+        if nh[0] < 0 or nh[0] >= COLS or nh[1] < 0 or nh[1] >= ROWS:
+            continue
+        if nh in own_block or nh in opp_block:
+            continue
+        legal[ego] = True
+    return legal
 
 
 CELL = 12
@@ -70,14 +93,27 @@ def record_episode(
     interp_ball: bool = True,
     seed: Optional[int] = None,
     learner_side: int | str = "random",
+    safety_filter: bool = False,
+    learner_q_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    opponent_q_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
 ) -> tuple[np.ndarray, dict]:
     """Play one episode and return (frames, info).
 
     frames: (T, 3, H, W) uint8 ndarray — T = episode length + 1 (includes initial).
     info: {won, length, terminal, scorer, learner_side}
+
+    If `safety_filter=True` AND both `learner_q_fn` and `opponent_q_fn`
+    are provided (returning length-4 Q-value / logit arrays for the 4 ego
+    actions), illegal actions are masked out before argmax on each side —
+    matching the in-browser never-crash filter. When `safety_filter=False`
+    the original (int-returning) callables are used unchanged.
     """
+    # When safety_filter is on, we substitute the opponent_policy fed into
+    # the env with a safety-wrapped version that masks its Q-values using
+    # the env's LIVE game state. Because the wrapper closes over `env`,
+    # we need to build env WITHOUT opponent first, then patch.
     env = SnakePongSelfPlayEnv(
-        opponent_policy=opponent_policy,
+        opponent_policy=opponent_policy,  # will be patched below if filtering
         learner_side=learner_side,
         snake_length=snake_length,
         snake_multiplier=snake_multiplier,
@@ -85,6 +121,34 @@ def record_episode(
         interp_ball=interp_ball,
         seed=seed,
     )
+
+    if safety_filter:
+        if learner_q_fn is None or opponent_q_fn is None:
+            raise ValueError("safety_filter=True requires learner_q_fn AND opponent_q_fn")
+        def _safe_opp_policy(obs: np.ndarray) -> int:
+            q = np.asarray(opponent_q_fn(obs), dtype=np.float32)
+            # Opp is whichever snake isn't the learner.
+            opp_side = 2 if env._learner == 1 else 1
+            own = env._game.s2 if opp_side == 2 else env._game.s1
+            other = env._game.s1 if opp_side == 2 else env._game.s2
+            legal = _legal_ego_mask(own, other, opp_side)
+            masked = np.where(legal, q, -np.inf)
+            if not any(legal):
+                return int(q.argmax())
+            return int(masked.argmax())
+        env.set_opponent(_safe_opp_policy)
+
+        def _safe_learner_action(obs: np.ndarray) -> int:
+            q = np.asarray(learner_q_fn(obs), dtype=np.float32)
+            own = env._game.s1 if env._learner == 1 else env._game.s2
+            other = env._game.s2 if env._learner == 1 else env._game.s1
+            legal = _legal_ego_mask(own, other, env._learner)
+            masked = np.where(legal, q, -np.inf)
+            if not any(legal):
+                return int(q.argmax())
+            return int(masked.argmax())
+        learner_action_fn = _safe_learner_action
+
     obs, reset_info = env.reset()
     frames = [_image_to_chw(render_frame(env._game))]
 

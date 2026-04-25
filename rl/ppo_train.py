@@ -152,7 +152,9 @@ def train(cfg: argparse.Namespace) -> None:
         snake_multiplier=cfg.snake_multiplier, max_steps=cfg.max_steps,
         interp_ball=cfg.interp_ball_obs,
         shape_coef=cfg.shape_coef, shape_gamma=cfg.gamma,
-        bf16=cfg.bf16, rng=rng,
+        bf16=cfg.bf16,
+        learner_safety_filter=cfg.learner_safety_filter,
+        rng=rng,
     )
 
     # Self-play pool + benchmark set (reuse DQN scaffolding)
@@ -241,6 +243,10 @@ def train(cfg: argparse.Namespace) -> None:
         b_values = flat["values"]
         b_advs = advs.reshape(-1)
         b_rets = rets.reshape(-1)
+        # Per-step legal mask: present only when learner_safety_filter=True.
+        # Same mask is re-applied to the recomputed logits in evaluate_actions
+        # so the update's Categorical matches the masked sampling distribution.
+        b_legal = flat.get("legal")
 
         # --- PPO epochs over minibatches ------------------------------------
         t_update = time.time()
@@ -263,6 +269,7 @@ def train(cfg: argparse.Namespace) -> None:
                 mb_old_value = b_values[mb_idx]
                 mb_advs = b_advs[mb_idx]
                 mb_rets = b_rets[mb_idx]
+                mb_legal = b_legal[mb_idx] if b_legal is not None else None
 
                 # Per-minibatch advantage normalization.
                 if cfg.norm_adv:
@@ -272,7 +279,7 @@ def train(cfg: argparse.Namespace) -> None:
                 # the loss accumulation in fp32 (default). bf16 has the fp32
                 # exponent range so no loss scaler is needed (unlike fp16).
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=cfg.bf16):
-                    new_logp, entropy, new_value = ac.evaluate_actions(mb_obs, mb_actions)
+                    new_logp, entropy, new_value = ac.evaluate_actions(mb_obs, mb_actions, legal=mb_legal)
                 # Cast back to fp32 for loss math — PPO's ratio/clip logic is
                 # sensitive to numerics; the small bf16 mantissa is fine for
                 # the matmuls but not for the exp(logratio) → clip chain.
@@ -502,6 +509,12 @@ def parse_args() -> argparse.Namespace:
                         "On Ampere+ (3090/4090/A100/H100) bf16 matmul is "
                         "~4× faster than fp32 — big update-phase win for "
                         "this tiny MLP. Losses stay in fp32 for PPO stability.")
+    p.add_argument("--learner-safety-filter", action="store_true", default=False,
+                   help="Mask illegal actions in the learner's sampling "
+                        "distribution (same cell-crash check applied in the "
+                        "browser). Makes the trained policy consistent with "
+                        "deployment; stores per-step legal mask and re-applies "
+                        "it in evaluate_actions during the update.")
     p.add_argument("--norm-adv", action="store_true", default=True)
     p.add_argument("--no-norm-adv", dest="norm_adv", action="store_false")
     p.add_argument("--clip-vloss", action="store_true", default=True)

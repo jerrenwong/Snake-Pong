@@ -2,7 +2,18 @@
 
 A two-player game combining Snake and Pong. Each player controls a snake that acts as their paddle — maneuver your snake to deflect the ball past your opponent. Includes a trained AI opponent with five difficulty tiers.
 
+## Credits
+
+Thanks to **Mehmet Can Bastemir** for improvement suggestions and for bravely fighting the AI snakes.
+
 ## Running Locally
+
+**Clone the repo:**
+
+```bash
+git clone https://github.com/jerrenwong/Snake-Pong.git
+cd Snake-Pong
+```
 
 The page uses ES modules and `fetch()`, which browsers block on `file://`.
 You need to serve the folder over HTTP — any static server works.
@@ -10,14 +21,12 @@ You need to serve the folder over HTTP — any static server works.
 **Option 1 — Python 3** (almost always installed):
 
 ```bash
-cd snake-pong
 python3 -m http.server 8000
 ```
 
 **Option 2 — Node.js** (if you have `npx` available):
 
 ```bash
-cd snake-pong
 npx --yes http-server -p 8000 .
 ```
 
@@ -81,10 +90,6 @@ A timer bar at the top corner of the canvas shows the remaining duration for eac
 - The ball bounces off the top/bottom walls and off any segment of either snake.
 - The center divider is lethal to snakes; the ball passes through it freely.
 - Power-up effects expire when the timer runs out; snake length returns to pre-boost size on expiry.
-
-## Credits
-
-Thanks to **Mehmet Can Bastemir** for suggestions for improvement.
 
 ## Project Structure
 
