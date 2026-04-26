@@ -424,7 +424,14 @@ function _showBossUnlockCelebration() {
   _celebrationTimeouts = [];
   msg.style.opacity = 0;
   actions.classList.remove('visible');
+  // Hide every other overlay child so only the celebration is visible —
+  // the overlay was display:none during gameplay, so without this the
+  // celebration would render under a hidden parent and the screen
+  // would just freeze on the last game frame.
+  if (mainMenu) mainMenu.style.display = 'none';
+  if (aiPanel) aiPanel.style.display = 'none';
   cel.style.display = 'flex';
+  overlay.style.display = 'flex';
 
   function showSentence(idx) {
     if (idx >= _CELEBRATION_SENTENCES.length) {
