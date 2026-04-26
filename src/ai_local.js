@@ -55,6 +55,16 @@ function _legalActionsP2(s1, s2) {
   return legal;
 }
 
+// Stochastic-sampling config. When `temperature` > 0 the policy samples
+// from the legal actions instead of taking argmax: scale logits by 1/T,
+// softmax over legal actions, keep the smallest nucleus whose cumulative
+// prob ≥ topP, sample. Only enabled for INSANE — calibrated via
+// rl/insane_temperature_sweep.py (T=0.1 / top-p=0.99 keeps competitive
+// play while making the snake feel less robotic).
+const SAMPLING_BY_VARIANT = {
+  insane: { temperature: 0.1, topP: 0.99 },
+};
+
 export class LocalAI {
   constructor() {
     this.session = null;
@@ -62,9 +72,11 @@ export class LocalAI {
     this.lastBallKey = null;
     this.phase = 0;
     this.ready = false;
+    this.variant = null;
   }
 
-  async load(onnxPath, metaPath) {
+  async load(onnxPath, metaPath, variant = null) {
+    this.variant = variant;
     // Point WASM runtime at the same CDN as the module (avoids CORS/COEP fuss).
     ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/';
     // Force single-threaded WASM: cross-origin isolation isn't guaranteed in this
@@ -101,22 +113,57 @@ export class LocalAI {
     const qRaw = results[this.meta.output_name].data;
     const q = Array.from(qRaw);
 
-    // Pick the highest-Q action among those that DON'T cause an immediate
-    // crash. If every action crashes, fall back to raw argmax (we're stuck).
+    // Pick action among the LEGAL set. Default = argmax (greedy). For
+    // variants in SAMPLING_BY_VARIANT, do top-p nucleus sampling at the
+    // configured temperature instead — this is the "stochastic INSANE"
+    // calibrated by rl/insane_temperature_sweep.py.
     const legal = _legalActionsP2(s1, s2);
-    let bestA = -1, bestQ = -Infinity;
-    for (let i = 0; i < q.length; i++) {
-      if (legal[i] && q[i] > bestQ) { bestQ = q[i]; bestA = i; }
-    }
+    const sampling = SAMPLING_BY_VARIANT[this.variant];
+    let bestA = -1;
     let safetyOverride = false;
-    if (bestA === -1) {
+
+    const legalIdx = [];
+    for (let i = 0; i < legal.length; i++) if (legal[i]) legalIdx.push(i);
+
+    if (legalIdx.length === 0) {
       // No safe move — doomed regardless. Take the model's top pick.
-      bestA = 0; bestQ = q[0];
+      bestA = 0;
+      let bestQ = q[0];
       for (let i = 1; i < q.length; i++) {
         if (q[i] > bestQ) { bestQ = q[i]; bestA = i; }
       }
+    } else if (sampling) {
+      // Temperature softmax over legal logits.
+      const T = Math.max(sampling.temperature, 1e-6);
+      const scaled = legalIdx.map(i => q[i] / T);
+      const m = Math.max.apply(null, scaled);
+      const exps = scaled.map(v => Math.exp(v - m));
+      const Z = exps.reduce((a, b) => a + b, 0);
+      const probs = exps.map(e => e / Z);
+      // Sort desc by prob, take smallest set whose cumulative ≥ topP.
+      const order = probs.map((_, j) => j).sort((a, b) => probs[b] - probs[a]);
+      let cum = 0, cutoff = order.length;
+      for (let k = 0; k < order.length; k++) {
+        cum += probs[order[k]];
+        if (cum >= sampling.topP) { cutoff = k + 1; break; }
+      }
+      const nucleus = order.slice(0, cutoff);
+      const nucleusZ = nucleus.reduce((s, j) => s + probs[j], 0);
+      // Sample.
+      const r = Math.random() * nucleusZ;
+      let acc = 0, picked = nucleus[nucleus.length - 1];
+      for (const j of nucleus) {
+        acc += probs[j];
+        if (r <= acc) { picked = j; break; }
+      }
+      bestA = legalIdx[picked];
+      safetyOverride = bestA !== order.map(j => legalIdx[j])[0];
     } else {
-      // Check whether the filter changed the decision (for logging).
+      // Greedy: argmax over legal logits.
+      let bestQ = -Infinity;
+      for (const i of legalIdx) {
+        if (q[i] > bestQ) { bestQ = q[i]; bestA = i; }
+      }
       let rawBest = 0, rawBestQ = q[0];
       for (let i = 1; i < q.length; i++) {
         if (q[i] > rawBestQ) { rawBestQ = q[i]; rawBest = i; }
