@@ -61,9 +61,7 @@ function _legalActionsP2(s1, s2) {
 // prob ≥ topP, sample. Only enabled for INSANE — calibrated via
 // rl/insane_temperature_sweep.py (T=0.1 / top-p=0.99 keeps competitive
 // play while making the snake feel less robotic).
-const SAMPLING_BY_VARIANT = {
-  insane: { temperature: 0.1, topP: 0.99 },
-};
+const SAMPLING_BY_VARIANT = {};
 
 export class LocalAI {
   constructor() {
