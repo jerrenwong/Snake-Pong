@@ -53,6 +53,14 @@ const aiPanel     = document.getElementById('ai-panel');
 const aiBack      = document.getElementById('ai-back');
 const celebrationContinue = document.getElementById('celebration-continue');
 const celebrationBack     = document.getElementById('celebration-back');
+const victoryContinue     = document.getElementById('victory-continue');
+const victoryBack         = document.getElementById('victory-back');
+const victoryNameInput    = document.getElementById('victory-name-input');
+const victoryNameField    = document.getElementById('victory-name-field');
+const victoryNameSubmit   = document.getElementById('victory-name-submit');
+const victoryReplayStage  = document.getElementById('victory-replay-stage');
+const victoryReplayCanvas = document.getElementById('victory-replay-canvas');
+const victoryReplayCaption = document.getElementById('victory-replay-caption');
 
 // Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
@@ -102,6 +110,10 @@ let aiLoadedVariant  = null;     // which variant is currently loaded in aiLocal
 // `bossModeActive` is true the score has no cap; play continues forever.
 let bossUnlocked     = (typeof localStorage !== 'undefined' &&
                         localStorage.getItem('snakepong_boss_unlocked') === '1');
+// Set the first time the player reaches the win score in BOSS mode. Used
+// only as a persistent badge — the victory page is shown on every win.
+let bossDefeated     = (typeof localStorage !== 'undefined' &&
+                        localStorage.getItem('snakepong_boss_defeated') === '1');
 let bossModeActive   = false;
 
 // Hidden INSANE shortcut: at the start of an INSANE round, if P1 walks
@@ -109,6 +121,11 @@ let bossModeActive   = false;
 // without any other input, BOSS unlocks immediately. `_insaneShortcut`
 // holds the expected path and the head-position cursor along it.
 let _insaneShortcut = null;
+
+// Replay buffer: captured each snake tick during BOSS mode so the victory
+// page can play back the full match the moment the player wins. Reset on
+// every BOSS round start; played back only on a BOSS-mode win.
+let _bossReplay = [];
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 
@@ -344,6 +361,7 @@ function tick() {
     _triggerInsaneShortcut();
     return;
   }
+  if (bossModeActive) _captureBossReplayFrame();
 
   if (powerupsEnabled) {
     for (const pu of [...powerupsOnField]) {
@@ -369,9 +387,16 @@ function awardPoint(player) {
   if (player === 1) score1++; else score2++;
   p1Pts.textContent = score1;
   p2Pts.textContent = score2;
-  // Boss mode: scores keep climbing forever; no win condition.
-  if (bossModeActive) { endRound(); return; }
+  // Boss mode: BOSS itself never "wins" by score — its score is just a
+  // counter — but the player can win by reaching the win threshold first.
+  // (The boss is "endless" from its side; it's the player who has to
+  // outlast it.)
   const win = parseInt(winSl.value);
+  if (bossModeActive) {
+    if (score1 >= win) endGame(1);
+    else endRound();
+    return;
+  }
   if (score1 >= win || score2 >= win) endGame(score1 >= win ? 1 : 2);
   else endRound();
 }
@@ -442,6 +467,9 @@ function buildLegend() {
 function startGame() {
   score1 = 0; score2 = 0;
   p1Pts.textContent = 0; p2Pts.textContent = 0;
+  // Fresh replay buffer at the start of every match — only used for BOSS,
+  // but cheap to reset universally.
+  _bossReplay = [];
   // Pick the BGM style BEFORE starting the loop so the new music style takes
   // effect on the very first scheduled note instead of waiting ~6s for the
   // next 16-beat loop boundary.
@@ -545,6 +573,17 @@ function endGame(winner) {
     if (onlineRole === 'host') sendState(winner);
     return;
   }
+  // Special case: P1 beat the BOSS → iridescent celebration sequence with
+  // hero-name input and a replay of the match.
+  if (winner === 1 && aiLocalMode && bossModeActive) {
+    if (!bossDefeated) {
+      bossDefeated = true;
+      try { localStorage.setItem('snakepong_boss_defeated', '1'); } catch (e) {}
+    }
+    _showBossVictoryCelebration();
+    if (onlineRole === 'host') sendState(winner);
+    return;
+  }
   ovTitle.textContent  = `PLAYER ${winner} WINS!`;
   ovMsg.textContent    = `Final score: ${score1} – ${score2}`;
   _showActionOnly('PLAY AGAIN');
@@ -614,6 +653,154 @@ function _hideBossUnlockCelebration() {
   const actions = document.getElementById('celebration-actions');
   if (actions) actions.classList.remove('visible');
   if (cel) cel.style.display = 'none';
+}
+
+// ── BOSS-defeated celebration ─────────────────────────────────────────────────
+// Three-stage iridescent sequence + canvas replay of the match. Triggered
+// from endGame() once when P1 reaches the win threshold against BOSS.
+
+const HERO_NAME_KEY = 'snakepong_hero_name';
+const _VICTORY_HOLD_MS  = 3500;   // sentence dwell time at full opacity
+const _VICTORY_FADE_MS  = 900;    // matches CSS transition
+const _REPLAY_FRAME_MS  = 45;     // ~22 fps playback (snappy but readable)
+let _victoryTimeouts = [];
+let _victoryReplayRenderer = null;  // lazy-init cached renderer for the replay canvas
+let _heroName = '';
+
+function _captureBossReplayFrame() {
+  if (!s1 || !s2 || !ball) return;
+  // Deep copy positions only — colors/effects come from live state during
+  // playback. Cap buffer at ~3000 frames (~5 min of boss play) so a stuck
+  // game doesn't balloon memory.
+  if (_bossReplay.length >= 3000) return;
+  _bossReplay.push({
+    s1: { body: s1.body.map(p => ({ x: p.x, y: p.y })),
+          dir:  { x: s1.dir.x, y: s1.dir.y }, color: s1.color, effect: s1.effect },
+    s2: { body: s2.body.map(p => ({ x: p.x, y: p.y })),
+          dir:  { x: s2.dir.x, y: s2.dir.y }, color: s2.color, effect: s2.effect },
+    ball: { x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy },
+    score1, score2,
+  });
+}
+
+function _showBossVictoryCelebration() {
+  const cel = document.getElementById('boss-victory');
+  const msg = victoryReplayCaption ? document.getElementById('victory-message') : null;
+  if (!cel || !msg) return;
+
+  _victoryTimeouts.forEach(clearTimeout);
+  _victoryTimeouts = [];
+
+  // Hide every other overlay child so only the celebration is visible.
+  if (mainMenu) mainMenu.style.display = 'none';
+  if (aiPanel) aiPanel.style.display = 'none';
+  if (onlinePanel) onlinePanel.style.display = 'none';
+  const bossCelEl = document.getElementById('boss-celebration');
+  if (bossCelEl) bossCelEl.style.display = 'none';
+  cel.style.display = 'flex';
+  overlay.style.display = 'flex';
+
+  // Reset all stages.
+  msg.style.opacity = 0;
+  msg.style.display = 'block';
+  if (victoryNameInput)   victoryNameInput.style.display   = 'none';
+  if (victoryReplayStage) victoryReplayStage.style.display = 'none';
+  if (victoryContinue)    victoryContinue.parentElement.classList.remove('visible');
+
+  // Restore last-used hero name so the field isn't blank if they replay.
+  try { _heroName = localStorage.getItem(HERO_NAME_KEY) || ''; } catch (e) { _heroName = ''; }
+  if (victoryNameField) victoryNameField.value = _heroName;
+
+  // Stage i — "THE UNBEATABLE HAS FALLEN".
+  msg.innerHTML = 'THE UNBEATABLE<br>HAS FALLEN.';
+  requestAnimationFrame(() => { msg.style.opacity = 1; });
+  _victoryTimeouts.push(setTimeout(() => {
+    msg.style.opacity = 0;
+    _victoryTimeouts.push(setTimeout(_victoryStageNameInput, _VICTORY_FADE_MS));
+  }, _VICTORY_HOLD_MS));
+}
+
+function _victoryStageNameInput() {
+  // Stage ii — hero-name input. Hides the sentence, shows the input block.
+  const msg = document.getElementById('victory-message');
+  if (msg) msg.style.display = 'none';
+  if (!victoryNameInput) { _victoryStageEternalStory(); return; }
+  victoryNameInput.style.display = 'flex';
+  if (victoryNameField) {
+    setTimeout(() => victoryNameField.focus(), 50);
+  }
+}
+
+function _victoryStageEternalStory() {
+  // Stage iii — "AND THEIR ETERNAL STORY…" then replay.
+  if (victoryNameInput) victoryNameInput.style.display = 'none';
+  const msg = document.getElementById('victory-message');
+  if (!msg) return;
+  msg.style.display = 'block';
+  msg.style.opacity = 0;
+  const heroLine = _heroName
+    ? `AND ${_heroName.toUpperCase()}'S<br>ETERNAL STORY…`
+    : 'AND THEIR<br>ETERNAL STORY…';
+  msg.innerHTML = heroLine;
+  requestAnimationFrame(() => { msg.style.opacity = 1; });
+  _victoryTimeouts.push(setTimeout(() => {
+    msg.style.opacity = 0;
+    _victoryTimeouts.push(setTimeout(_victoryStageReplay, _VICTORY_FADE_MS));
+  }, _VICTORY_HOLD_MS));
+}
+
+function _victoryStageReplay() {
+  // Stage iv — render the captured frames on the small canvas.
+  const msg = document.getElementById('victory-message');
+  if (msg) msg.style.display = 'none';
+  if (!victoryReplayStage || !victoryReplayCanvas) {
+    _victoryStageActions();
+    return;
+  }
+  victoryReplayStage.style.display = 'flex';
+  if (victoryReplayCaption) {
+    victoryReplayCaption.textContent = _heroName
+      ? `${_heroName.toUpperCase()}  ·  ${score1} – ${score2}`
+      : `THE HERO  ·  ${score1} – ${score2}`;
+  }
+  if (!_victoryReplayRenderer) {
+    _victoryReplayRenderer = createRenderer(victoryReplayCanvas);
+  }
+  const frames = _bossReplay;
+  if (!frames.length) {
+    // No frames captured — skip directly to the action buttons.
+    _victoryStageActions();
+    return;
+  }
+  let i = 0;
+  const tick = () => {
+    if (i >= frames.length) {
+      _victoryTimeouts.push(setTimeout(_victoryStageActions, 600));
+      return;
+    }
+    const f = frames[i++];
+    _victoryReplayRenderer.draw(f.s1, f.s2, f.ball, [], [], []);
+    _victoryTimeouts.push(setTimeout(tick, _REPLAY_FRAME_MS));
+  };
+  tick();
+}
+
+function _victoryStageActions() {
+  if (victoryContinue && victoryContinue.parentElement) {
+    victoryContinue.parentElement.classList.add('visible');
+  }
+}
+
+function _hideBossVictoryCelebration() {
+  _victoryTimeouts.forEach(clearTimeout);
+  _victoryTimeouts = [];
+  const cel = document.getElementById('boss-victory');
+  if (cel) cel.style.display = 'none';
+  if (victoryReplayStage) victoryReplayStage.style.display = 'none';
+  if (victoryNameInput)   victoryNameInput.style.display   = 'none';
+  if (victoryContinue && victoryContinue.parentElement) {
+    victoryContinue.parentElement.classList.remove('visible');
+  }
 }
 
 // ── Online: state serialisation ───────────────────────────────────────────────
@@ -1019,6 +1206,44 @@ if (celebrationBack) {
     localBtn.style.display = '';
     aiBtn.style.display = '';
     onlineBtn.style.display = '';
+    mainMenu.style.display = 'flex';
+  });
+}
+
+// BOSS-defeated celebration buttons.
+function _commitHeroNameAndAdvance() {
+  if (victoryNameField) {
+    _heroName = victoryNameField.value.trim().slice(0, 32);
+    if (_heroName) {
+      try { localStorage.setItem(HERO_NAME_KEY, _heroName); } catch (e) {}
+    }
+  }
+  _victoryStageEternalStory();
+}
+if (victoryNameSubmit) {
+  victoryNameSubmit.addEventListener('click', _commitHeroNameAndAdvance);
+}
+if (victoryNameField) {
+  victoryNameField.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); _commitHeroNameAndAdvance(); }
+  });
+}
+if (victoryContinue) {
+  victoryContinue.addEventListener('click', () => {
+    _hideBossVictoryCelebration();
+    bossModeActive = true;
+    _loadAndPlayVariant('boss', null);
+  });
+}
+if (victoryBack) {
+  victoryBack.addEventListener('click', () => {
+    _hideBossVictoryCelebration();
+    bossModeActive = false;
+    aiPanel.style.display = 'none';
+    localBtn.textContent = 'LOCAL';
+    localBtn.style.display = '';
+    aiBtn.style.display = '';
+    if (onlineBtn) onlineBtn.style.display = '';
     mainMenu.style.display = 'flex';
   });
 }

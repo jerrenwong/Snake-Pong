@@ -438,6 +438,182 @@
       98%           { filter: brightness(0.85); }
       99%           { filter: none; }
     }
+
+    /* BOSS-defeated celebration — iridescent silver/violet, contrast
+       to the boss-unlock gold. Same fixed-frame layout so the action
+       buttons land in a stable centre. */
+    #boss-victory {
+      display: none;
+      position: absolute;
+      inset: 0;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #06060a;
+      z-index: 50;
+      overflow: hidden;
+    }
+    #boss-victory .aurora-frame {
+      position: relative;
+      text-align: center;
+      padding: 2.5rem 3rem;
+      border: 1px solid rgba(180, 200, 255, 0.25);
+      background: radial-gradient(circle at center, rgba(20, 30, 60, 0.55), transparent 70%);
+      animation: aurora-breathe 5s ease-in-out infinite;
+      width: 600px;
+      max-width: 92vw;
+      min-height: 320px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+    }
+    #boss-victory .message {
+      color: #d8e6ff !important;
+      font-size: 1.25rem !important;
+      line-height: 2 !important;
+      letter-spacing: 0.18em;
+      max-width: none !important;
+      width: 100%;
+      text-align: center;
+      background: linear-gradient(90deg,#cdb6ff,#a4d8ff,#b8ffea,#a4d8ff,#cdb6ff);
+      background-size: 300% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow:
+        0 0 10px rgba(180, 200, 255, 0.55),
+        0 0 24px rgba(150, 130, 255, 0.35),
+        0 0 40px rgba(120, 200, 255, 0.20);
+      transition: opacity 0.9s ease;
+      opacity: 0;
+      animation: aurora-shimmer 8s linear infinite;
+    }
+    #victory-actions {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    #victory-actions.visible {
+      display: flex;
+    }
+    #victory-continue {
+      background: transparent;
+      border: 1px solid rgba(180, 200, 255, 0.6);
+      color: #d8e6ff;
+      padding: 10px 28px;
+      font-family: inherit;
+      font-size: 0.85rem;
+      letter-spacing: 0.22em;
+      cursor: pointer;
+      text-shadow: 0 0 10px rgba(180, 200, 255, 0.5);
+      transition: all 0.15s;
+    }
+    #victory-continue:hover {
+      background: rgba(180, 200, 255, 0.1);
+      border-color: rgba(180, 200, 255, 1);
+    }
+    #victory-back {
+      background: transparent;
+      border: none;
+      color: rgba(200, 210, 240, 0.3);
+      font-family: inherit;
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      cursor: pointer;
+      padding: 4px 0;
+    }
+    #victory-back:hover { color: rgba(200, 210, 240, 0.8); }
+    @keyframes aurora-breathe {
+      0%, 100% { border-color: rgba(180, 200, 255, 0.25); }
+      50%      { border-color: rgba(180, 200, 255, 0.6); }
+    }
+    @keyframes aurora-shimmer {
+      0%   { background-position: 0%   50%; }
+      100% { background-position: 300% 50%; }
+    }
+    /* Stage ii: hero-name input. Same iridescent palette as the message. */
+    #victory-name-input {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      width: 100%;
+    }
+    .aurora-prompt {
+      color: #d8e6ff !important;
+      font-size: 0.95rem !important;
+      letter-spacing: 0.22em !important;
+      line-height: 1.7 !important;
+      max-width: none !important;
+      width: 100%;
+      text-align: center !important;
+      text-shadow:
+        0 0 8px rgba(180, 200, 255, 0.55),
+        0 0 18px rgba(150, 130, 255, 0.3);
+    }
+    #victory-name-field {
+      background: rgba(20, 30, 60, 0.45);
+      border: 1px solid rgba(180, 200, 255, 0.45);
+      color: #e8eeff;
+      font-family: inherit;
+      font-size: 1rem;
+      letter-spacing: 0.2em;
+      text-align: center;
+      padding: 10px 14px;
+      width: 80%;
+      max-width: 360px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    #victory-name-field:focus {
+      border-color: rgba(220, 230, 255, 0.95);
+      box-shadow: 0 0 14px rgba(180, 200, 255, 0.4);
+    }
+    #victory-name-submit {
+      background: transparent;
+      border: 1px solid rgba(180, 200, 255, 0.6);
+      color: #d8e6ff;
+      padding: 6px 22px;
+      font-family: inherit;
+      font-size: 1.1rem;
+      letter-spacing: 0.18em;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    #victory-name-submit:hover {
+      background: rgba(180, 200, 255, 0.12);
+      border-color: rgba(220, 230, 255, 1);
+    }
+    /* Stage replay: caption + canvas. */
+    #victory-replay-stage {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+    }
+    .aurora-caption {
+      color: #d8e6ff !important;
+      font-size: 0.85rem !important;
+      letter-spacing: 0.22em !important;
+      max-width: none !important;
+      width: 100%;
+      text-align: center !important;
+      text-shadow: 0 0 8px rgba(180, 200, 255, 0.45);
+      opacity: 0.85;
+    }
+    #victory-replay-canvas {
+      width: 420px;
+      max-width: 88%;
+      height: auto;
+      aspect-ratio: 936 / 676;
+      border: 1px solid rgba(180, 200, 255, 0.35);
+      background: #050510;
+      box-shadow: 0 0 24px rgba(150, 180, 255, 0.18);
+    }
     /* unused legacy classes kept as no-ops so any stale refs don't break. */
     .celebration-headline, .celebration-tagline, .celebration-subline { display: none; }
     .confetti-host, .confetti { display: none !important; }
@@ -817,6 +993,35 @@
           <div id="celebration-actions">
             <button id="celebration-continue">FIGHT THE BOSS</button>
             <button id="celebration-back">↩ back to menu</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- BOSS-defeated celebration — three iridescent silver/violet
+           pages then a replay video of the run that beat the boss. -->
+      <div id="boss-victory">
+        <div class="aurora-frame">
+          <!-- Stages i + iii: sentence reveal -->
+          <p class="message" id="victory-message">&nbsp;</p>
+
+          <!-- Stage ii: hero-name input, shown only while -->
+          <div id="victory-name-input">
+            <p class="aurora-prompt">THE WORLD SHALL REMEMBER<br>THE HERO'S NAME</p>
+            <input id="victory-name-field" type="text" maxlength="32"
+                   autocomplete="off" spellcheck="false" placeholder="enter your name" />
+            <button id="victory-name-submit">↵</button>
+          </div>
+
+          <!-- Stage replay: canvas + caption -->
+          <div id="victory-replay-stage">
+            <p class="aurora-caption" id="victory-replay-caption">&nbsp;</p>
+            <canvas id="victory-replay-canvas"></canvas>
+          </div>
+
+          <!-- Final actions, shown after the replay finishes. -->
+          <div id="victory-actions">
+            <button id="victory-continue">PLAY AGAIN</button>
+            <button id="victory-back">↩ back to menu</button>
           </div>
         </div>
       </div>
