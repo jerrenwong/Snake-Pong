@@ -427,6 +427,22 @@
       padding: 4px 0;
     }
     #celebration-back:hover { color: rgba(255, 200, 100, 0.7); }
+    #celebration-skip-fight {
+      background: transparent;
+      border: 1px dashed rgba(255, 200, 100, 0.35);
+      color: rgba(255, 200, 100, 0.55);
+      font-family: inherit;
+      font-size: 0.72rem;
+      letter-spacing: 0.18em;
+      padding: 6px 16px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    #celebration-skip-fight:hover {
+      color: rgba(255, 220, 140, 0.95);
+      border-color: rgba(255, 200, 100, 0.85);
+      background: rgba(255, 200, 100, 0.06);
+    }
     @keyframes ember-breathe {
       0%, 100% { border-color: rgba(255, 200, 100, 0.25); }
       50%      { border-color: rgba(255, 200, 100, 0.55); }
@@ -452,26 +468,6 @@
       background: #06060a;
       z-index: 50;
       overflow: hidden;
-    }
-    #victory-skip {
-      position: absolute;
-      top: 14px;
-      right: 14px;
-      background: transparent;
-      border: 1px solid rgba(180, 200, 255, 0.3);
-      color: rgba(200, 210, 240, 0.55);
-      font-family: inherit;
-      font-size: 0.7rem;
-      letter-spacing: 0.18em;
-      padding: 6px 14px;
-      cursor: pointer;
-      z-index: 60;
-      transition: all 0.15s;
-    }
-    #victory-skip:hover {
-      color: #d8e6ff;
-      border-color: rgba(180, 200, 255, 0.85);
-      background: rgba(180, 200, 255, 0.08);
     }
     #boss-victory .aurora-frame {
       position: relative;
@@ -1012,6 +1008,7 @@
           <p class="message" id="celebration-message">&nbsp;</p>
           <div id="celebration-actions">
             <button id="celebration-continue">FIGHT THE BOSS</button>
+            <button id="celebration-skip-fight" title="Preview the post-victory sequence without fighting the boss">↪ skip the fight</button>
             <button id="celebration-back">↩ back to menu</button>
           </div>
         </div>
@@ -1020,7 +1017,6 @@
       <!-- BOSS-defeated celebration — three iridescent silver/violet
            pages then a replay video of the run that beat the boss. -->
       <div id="boss-victory">
-        <button id="victory-skip" title="Skip to the end of the celebration">SKIP →</button>
         <div class="aurora-frame">
           <!-- Stages i + iii: sentence reveal -->
           <p class="message" id="victory-message">&nbsp;</p>

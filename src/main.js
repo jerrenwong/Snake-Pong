@@ -50,7 +50,7 @@ const victoryNameSubmit   = document.getElementById('victory-name-submit');
 const victoryReplayStage  = document.getElementById('victory-replay-stage');
 const victoryReplayCanvas = document.getElementById('victory-replay-canvas');
 const victoryReplayCaption = document.getElementById('victory-replay-caption');
-const victorySkip          = document.getElementById('victory-skip');
+const celebrationSkipFight = document.getElementById('celebration-skip-fight');
 
 // Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
@@ -703,26 +703,6 @@ function _victoryStageActions() {
   }
 }
 
-// Skip everything: cancel pending fades/replay timers and jump straight to
-// the final action buttons, hiding the per-stage UI in between.
-function _skipBossVictoryToEnd() {
-  _victoryTimeouts.forEach(clearTimeout);
-  _victoryTimeouts = [];
-  const msg = document.getElementById('victory-message');
-  if (msg) {
-    msg.style.display = 'none';
-    msg.style.opacity = 0;
-  }
-  if (victoryNameInput)   victoryNameInput.style.display = 'none';
-  if (victoryReplayStage) victoryReplayStage.style.display = 'none';
-  // Persist whatever the user typed before skipping, if anything.
-  if (victoryNameField && victoryNameField.value.trim()) {
-    _heroName = victoryNameField.value.trim().slice(0, 32);
-    try { localStorage.setItem(HERO_NAME_KEY, _heroName); } catch (e) {}
-  }
-  _victoryStageActions();
-}
-
 function _hideBossVictoryCelebration() {
   _victoryTimeouts.forEach(clearTimeout);
   _victoryTimeouts = [];
@@ -926,8 +906,24 @@ function _commitHeroNameAndAdvance() {
 if (victoryNameSubmit) {
   victoryNameSubmit.addEventListener('click', _commitHeroNameAndAdvance);
 }
-if (victorySkip) {
-  victorySkip.addEventListener('click', _skipBossVictoryToEnd);
+// Skip the boss fight entirely and jump to the post-victory animation —
+// useful for previewing the cutscene without grinding the boss. Triggered
+// from the boss-unlock celebration page (third button under FIGHT THE BOSS).
+if (celebrationSkipFight) {
+  celebrationSkipFight.addEventListener('click', () => {
+    _hideBossUnlockCelebration();
+    // No replay frames since the fight didn't happen — _victoryStageReplay
+    // already handles the empty-buffer case by skipping straight to the
+    // final actions.
+    _bossReplay = [];
+    bossModeActive = false;
+    if (!bossDefeated) {
+      bossDefeated = true;
+      try { localStorage.setItem('snakepong_boss_defeated', '1'); } catch (e) {}
+    }
+    phase = 'gameover';
+    _showBossVictoryCelebration();
+  });
 }
 if (victoryNameField) {
   victoryNameField.addEventListener('keydown', e => {
