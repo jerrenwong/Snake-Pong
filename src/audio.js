@@ -28,6 +28,22 @@ function getCtx() {
   return ctx;
 }
 
+// ── Capture (used by the boss-victory replay recorder) ───────────────────────
+let _captureDest = null;
+
+// Returns a MediaStream tapping into the master gain — every tone, percussion
+// hit, and SFX routes through master, so the stream contains the full audio
+// the user is hearing. Lazy-initialised; the destination is wired in addition
+// to ctx.destination, so user-facing playback is unaffected.
+export function getAudioStream() {
+  const c = getCtx();
+  if (!_captureDest) {
+    _captureDest = c.createMediaStreamDestination();
+    master.connect(_captureDest);
+  }
+  return _captureDest.stream;
+}
+
 // ── Tone primitive ────────────────────────────────────────────────────────────
 
 function tone(freq, startTime, durationSec, type = 'square', vol = 0.15, dest = null) {
