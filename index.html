@@ -453,6 +453,26 @@
       z-index: 50;
       overflow: hidden;
     }
+    #victory-skip {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      background: transparent;
+      border: 1px solid rgba(180, 200, 255, 0.3);
+      color: rgba(200, 210, 240, 0.55);
+      font-family: inherit;
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      padding: 6px 14px;
+      cursor: pointer;
+      z-index: 60;
+      transition: all 0.15s;
+    }
+    #victory-skip:hover {
+      color: #d8e6ff;
+      border-color: rgba(180, 200, 255, 0.85);
+      background: rgba(180, 200, 255, 0.08);
+    }
     #boss-victory .aurora-frame {
       position: relative;
       text-align: center;
@@ -1000,6 +1020,7 @@
       <!-- BOSS-defeated celebration — three iridescent silver/violet
            pages then a replay video of the run that beat the boss. -->
       <div id="boss-victory">
+        <button id="victory-skip" title="Skip to the end of the celebration">SKIP →</button>
         <div class="aurora-frame">
           <!-- Stages i + iii: sentence reveal -->
           <p class="message" id="victory-message">&nbsp;</p>
