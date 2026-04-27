@@ -252,9 +252,7 @@ function _triggerInsaneShortcut() {
   phase = 'gameover';
   stopBgm();
   sfxWin();
-  pendingSfx.push('win');
   _showBossUnlockCelebration();
-  if (onlineRole === 'host') sendState();
 }
 
 // ── Game logic ────────────────────────────────────────────────────────────────
