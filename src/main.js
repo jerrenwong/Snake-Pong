@@ -5,7 +5,7 @@ import { createSnakes, createBall,
          getBallTps }                                     from './logic.js';
 import { startBgm, stopBgm, pauseBgm, resumeBgm, setBgmStyle,
          sfxBallHit, sfxScore, sfxDeath, sfxWin,
-         sfxPowerup }                                     from './audio.js';
+         sfxPowerup, getAudioStream }                     from './audio.js';
 import { POWERUP_DEFS, spawnPowerup,
          SPAWN_COOLDOWN_MS, SPAWN_EXPECTED_MS,
          FIELD_EXPIRE_MS }                                from './powerups.js';
@@ -61,6 +61,7 @@ const victoryNameSubmit   = document.getElementById('victory-name-submit');
 const victoryReplayStage  = document.getElementById('victory-replay-stage');
 const victoryReplayCanvas = document.getElementById('victory-replay-canvas');
 const victoryReplayCaption = document.getElementById('victory-replay-caption');
+const victoryReplayDownload = document.getElementById('victory-replay-download');
 
 // Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
@@ -744,15 +745,15 @@ function _victoryStageNameInput() {
 }
 
 function _victoryStageEternalStory() {
-  // Stage iii — "AND THEIR ETERNAL STORY…" then replay.
+  // Stage iii — "We shall remember your story" then the replay video.
   if (victoryNameInput) victoryNameInput.style.display = 'none';
   const msg = document.getElementById('victory-message');
   if (!msg) return;
   msg.style.display = 'block';
   msg.style.opacity = 0;
   const heroLine = _heroName
-    ? `AND ${_heroName.toUpperCase()}'S<br>ETERNAL STORY…`
-    : 'AND THEIR<br>ETERNAL STORY…';
+    ? `WE SHALL REMEMBER<br>${_heroName.toUpperCase()}'S STORY.`
+    : 'WE SHALL REMEMBER<br>YOUR STORY.';
   msg.innerHTML = heroLine;
   requestAnimationFrame(() => { msg.style.opacity = 1; });
   _victoryTimeouts.push(setTimeout(() => {
@@ -762,7 +763,8 @@ function _victoryStageEternalStory() {
 }
 
 function _victoryStageReplay() {
-  // Stage iv — render the captured frames on the small canvas.
+  // Final stage — replay the boss-victory match on a small canvas while
+  // BGM plays, recording video+audio into a downloadable WebM.
   const msg = document.getElementById('victory-message');
   if (msg) msg.style.display = 'none';
   if (!victoryReplayStage || !victoryReplayCanvas) {
@@ -771,30 +773,81 @@ function _victoryStageReplay() {
   }
   victoryReplayStage.style.display = 'flex';
   if (victoryReplayCaption) {
-    victoryReplayCaption.textContent = _heroName
-      ? `${_heroName.toUpperCase()}  ·  ${score1} – ${score2}`
-      : `THE HERO  ·  ${score1} – ${score2}`;
+    victoryReplayCaption.textContent = _heroName ? _heroName.toUpperCase() : 'THE HERO';
   }
   if (!_victoryReplayRenderer) {
     _victoryReplayRenderer = createRenderer(victoryReplayCanvas);
   }
+  if (victoryReplayDownload) {
+    victoryReplayDownload.style.display = 'none';
+    victoryReplayDownload.removeAttribute('href');
+  }
+
   const frames = _bossReplay;
   if (!frames.length) {
-    // No frames captured — skip directly to the action buttons.
     _victoryStageActions();
     return;
   }
+
+  // Try to set up a MediaRecorder mixing canvas video + master audio. Any
+  // failure (older Safari, missing codecs, browser policy) falls through
+  // to silent unrecorded playback so the cutscene still works.
+  let recorder = null;
+  const recordedChunks = [];
+  try {
+    if (typeof MediaRecorder !== 'undefined' && victoryReplayCanvas.captureStream) {
+      const videoStream = victoryReplayCanvas.captureStream(30);
+      const audioStream = getAudioStream();
+      const combined = new MediaStream([
+        ...videoStream.getVideoTracks(),
+        ...audioStream.getAudioTracks(),
+      ]);
+      const candidates = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+      ];
+      const mime = candidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
+      recorder = new MediaRecorder(combined, mime ? { mimeType: mime } : undefined);
+      recorder.ondataavailable = e => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: recorder.mimeType || 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        if (victoryReplayDownload) {
+          victoryReplayDownload.href = url;
+          victoryReplayDownload.download =
+            `${(_heroName || 'hero').toLowerCase().replace(/\s+/g, '-')}-snake-pong-victory.webm`;
+          victoryReplayDownload.style.display = '';
+        }
+      };
+      recorder.start();
+    }
+  } catch (e) {
+    console.warn('[boss-victory] recording unavailable:', e);
+    recorder = null;
+  }
+
+  // Soundtrack the replay with the celebration BGM (the score that played
+  // during the boss fight). It was stopped at endGame; restart it here so
+  // it both plays back and gets baked into the recording.
+  setBgmStyle('celebration');
+  startBgm();
+
   let i = 0;
-  const tick = () => {
+  const tickPlay = () => {
     if (i >= frames.length) {
+      stopBgm();
+      if (recorder && recorder.state === 'recording') {
+        try { recorder.stop(); } catch (e) { /* ignore */ }
+      }
       _victoryTimeouts.push(setTimeout(_victoryStageActions, 600));
       return;
     }
     const f = frames[i++];
     _victoryReplayRenderer.draw(f.s1, f.s2, f.ball, [], [], []);
-    _victoryTimeouts.push(setTimeout(tick, _REPLAY_FRAME_MS));
+    _victoryTimeouts.push(setTimeout(tickPlay, _REPLAY_FRAME_MS));
   };
-  tick();
+  tickPlay();
 }
 
 function _victoryStageActions() {
@@ -806,12 +859,20 @@ function _victoryStageActions() {
 function _hideBossVictoryCelebration() {
   _victoryTimeouts.forEach(clearTimeout);
   _victoryTimeouts = [];
+  // If the user dismissed the overlay mid-replay, the BGM was still
+  // running — kill it before returning to the menu / next match.
+  stopBgm();
   const cel = document.getElementById('boss-victory');
   if (cel) cel.style.display = 'none';
   if (victoryReplayStage) victoryReplayStage.style.display = 'none';
   if (victoryNameInput)   victoryNameInput.style.display   = 'none';
   if (victoryContinue && victoryContinue.parentElement) {
     victoryContinue.parentElement.classList.remove('visible');
+  }
+  if (victoryReplayDownload && victoryReplayDownload.href) {
+    try { URL.revokeObjectURL(victoryReplayDownload.href); } catch (e) {}
+    victoryReplayDownload.removeAttribute('href');
+    victoryReplayDownload.style.display = 'none';
   }
 }
 

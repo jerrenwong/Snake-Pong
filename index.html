@@ -614,6 +614,25 @@
       background: #050510;
       box-shadow: 0 0 24px rgba(150, 180, 255, 0.18);
     }
+    #victory-replay-download {
+      display: inline-block;
+      margin-top: 6px;
+      background: transparent;
+      border: 1px solid rgba(180, 200, 255, 0.55);
+      color: #d8e6ff;
+      padding: 7px 22px;
+      font-family: inherit;
+      font-size: 0.78rem;
+      letter-spacing: 0.22em;
+      text-decoration: none;
+      cursor: pointer;
+      text-shadow: 0 0 10px rgba(180, 200, 255, 0.5);
+      transition: all 0.15s;
+    }
+    #victory-replay-download:hover {
+      background: rgba(180, 200, 255, 0.1);
+      border-color: rgba(220, 230, 255, 1);
+    }
     /* unused legacy classes kept as no-ops so any stale refs don't break. */
     .celebration-headline, .celebration-tagline, .celebration-subline { display: none; }
     .confetti-host, .confetti { display: none !important; }
@@ -1012,10 +1031,11 @@
             <button id="victory-name-submit">↵</button>
           </div>
 
-          <!-- Stage replay: canvas + caption -->
+          <!-- Stage replay: canvas + caption + download link -->
           <div id="victory-replay-stage">
             <p class="aurora-caption" id="victory-replay-caption">&nbsp;</p>
             <canvas id="victory-replay-canvas"></canvas>
+            <a id="victory-replay-download" download style="display:none;">↓ DOWNLOAD VIDEO</a>
           </div>
 
           <!-- Final actions, shown after the replay finishes. -->
