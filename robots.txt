@@ -4,4 +4,4 @@ Disallow: /rl/
 Disallow: /node_modules/
 Disallow: /models/
 
-Sitemap: https://jerrenwong.github.io/snake_pong/sitemap.xml
+Sitemap: https://jerrenwong.github.io/Snake-Pong/sitemap.xml
