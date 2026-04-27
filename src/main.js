@@ -9,7 +9,7 @@ import { startBgm, stopBgm, pauseBgm, resumeBgm, setBgmStyle,
 import { POWERUP_DEFS, spawnPowerup,
          SPAWN_COOLDOWN_MS, SPAWN_EXPECTED_MS,
          FIELD_EXPIRE_MS }                                from './powerups.js';
-import { ROWS, WALL_L, WALL_R }                           from './constants.js';
+import { WALL_L, WALL_R }                                 from './constants.js';
 import { createNetwork }                                  from './network.js';
 import { LocalAI }                                        from './ai_local.js';
 
@@ -271,35 +271,51 @@ async function runAILocalInference() {
 }
 
 // ── INSANE → BOSS shortcut ────────────────────────────────────────────────────
-// If, on the very first round of an INSANE match, P1 walks the head straight
-// up to the top wall and then straight left into the (0, 0) corner — no other
-// inputs, no deviations, no death — BOSS unlocks immediately. The path is
-// the unique L-shape from the spawn cell to the top-left corner.
+// Walk P1's head up to the top wall, then left into the (0, 0) corner — no
+// down/right inputs after the first W, no death — and BOSS unlocks. Uses a
+// 3-phase state machine (right → up → left) so it tolerates any number of
+// default-right steps before the player presses W (the first tick fires
+// ~145ms after spawn, well below human reaction time, so a strict
+// fixed-path matcher would never trigger).
 function _armInsaneShortcut() {
   _insaneShortcut = null;
   if (!aiLocalMode || aiLoadedVariant !== 'insane') return;
   if (bossUnlocked) return;
-  const hy  = Math.floor(ROWS / 2) - (snakeMultiplier === 3 ? 1 : 0);
-  const h1x = Math.floor(WALL_L / 2);
-  const path = [];
-  for (let y = hy - 1; y >= 0; y--) path.push({ x: h1x, y });   // up phase
-  for (let x = h1x - 1; x >= 0; x--) path.push({ x, y: 0 });    // left phase
-  _insaneShortcut = { path, idx: 0, alive: true, completed: false };
+  _insaneShortcut = { phase: 'right', alive: true, completed: false, prev: null };
 }
 
 function _stepInsaneShortcut() {
   const sc = _insaneShortcut;
   if (!sc || !sc.alive || !s1) return;
   const head = s1.body[0];
-  const expect = sc.path[sc.idx];
-  if (!expect || head.x !== expect.x || head.y !== expect.y) {
-    sc.alive = false;
+  if (sc.prev === null) {
+    sc.prev = { x: head.x, y: head.y };
     return;
   }
-  sc.idx += 1;
-  if (sc.idx >= sc.path.length) {
+  const dx = head.x - sc.prev.x;
+  const dy = head.y - sc.prev.y;
+  sc.prev = { x: head.x, y: head.y };
+
+  if (sc.phase === 'right') {
+    if (dx === 1 && dy === 0) return;                       // default-right ok
+    if (dx === 0 && dy === -1) { sc.phase = 'up'; return; } // first W press
+    sc.alive = false; return;
+  }
+  if (sc.phase === 'up') {
+    if (dx === 0 && dy === -1) return;                      // keep going up
+    if (dx === -1 && dy === 0 && head.y === 0) {            // pivot at top row
+      sc.phase = 'left';
+      if (head.x === 0) sc.completed = true;
+      return;
+    }
+    sc.alive = false; return;
+  }
+  if (sc.phase === 'left') {
+    if (dx === -1 && dy === 0 && head.y === 0) {
+      if (head.x === 0) sc.completed = true;
+      return;
+    }
     sc.alive = false;
-    sc.completed = true;
   }
 }
 
