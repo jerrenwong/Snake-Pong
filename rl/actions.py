@@ -1,8 +1,8 @@
 """Action-selection helpers for single-env / per-env Q-lookups.
 
-Batched rollout paths in vec_rollout.py / vec_rollout_gpu.py have their own
-helpers. These are for code paths that work on single observations at a
-time (play server, eval, play.py).
+The batched GPU rollout in `vec_rollout_gpu.py` has its own helpers.
+These are for code paths that work on single observations at a time
+(eval, ppo_train greedy benchmarks).
 """
 from __future__ import annotations
 

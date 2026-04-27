@@ -18,8 +18,57 @@ from pathlib import Path
 
 import numpy as np
 
-from rl.ai_guest import _build_obs_from_state
 from rl.env import COLS, ROWS
+
+
+def _build_obs_from_state(
+    state: dict,
+    as_player: int,
+    target_len: int,
+    interp_ball: bool,
+    phase: int,
+    mult: int,
+) -> np.ndarray:
+    """Build the egocentric observation from a serialized game state.
+
+    Mirrors the in-browser JS encoder: own snake first (mirrored on x for P2),
+    then opponent snake, then ball (x, y, vx, vy) with optional sub-step
+    interpolation when `interp_ball` is True and `mult > 1`.
+    """
+    nx, ny = COLS - 1, ROWS - 1
+    mirror = (as_player == 2)
+    own = state["s2"]["body"] if mirror else state["s1"]["body"]
+    opp = state["s1"]["body"] if mirror else state["s2"]["body"]
+
+    def encode(body):
+        body = list(body)
+        if len(body) >= target_len:
+            body = body[:target_len]
+        else:
+            body = body + [body[-1]] * (target_len - len(body))
+        out = np.empty(target_len * 2, dtype=np.float32)
+        for i, p in enumerate(body):
+            x, y = int(p["x"]), int(p["y"])
+            xm = (nx - x) if mirror else x
+            out[2 * i]     = xm / nx
+            out[2 * i + 1] = y / ny
+        return out
+
+    own_b = encode(own)
+    opp_b = encode(opp)
+    ball = state["ball"]
+    bx, by = float(ball["x"]), float(ball["y"])
+    vx, vy = float(ball["vx"]), float(ball["vy"])
+    if interp_ball and mult > 1:
+        frac = phase / mult
+        bx += frac * vx
+        by += frac * vy
+        vx /= mult
+        vy /= mult
+    bx_o = (nx - bx) if mirror else bx
+    vx_o = -vx if mirror else vx
+    tail = np.array([bx_o / nx, by / ny, vx_o, vy], dtype=np.float32)
+    return np.concatenate([own_b, opp_b, tail], axis=0)
 
 TESTS_DIR = Path(__file__).parent
 JS_RUNNER = TESTS_DIR / "parity_js_obs.mjs"

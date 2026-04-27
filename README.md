@@ -34,10 +34,9 @@ Then open **<http://localhost:8000/>** in any modern browser (Chrome, Firefox, S
 
 The first click on the AI button briefly pulls `onnxruntime-web` from a CDN (cached after the first load). After that the game runs fully offline.
 
-Two other ports of call:
-
-- `npm install && node server.js` — starts a WebSocket relay for online play on top of the same static server (the page itself works the same way).
-- `python -m rl.play_server --checkpoint <path>` — the training-era server that also serves the page but plays as the AI opponent itself (useful when prototyping new checkpoints).
+For online play, run `npm install && node server.js` — it starts a
+WebSocket relay on top of the same static server (the page itself works
+the same way).
 
 ## How to Play
 

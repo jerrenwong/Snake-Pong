@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /rl/
+Disallow: /node_modules/
+Disallow: /models/
+
+Sitemap: https://jerrenwong.github.io/snake_pong/sitemap.xml
