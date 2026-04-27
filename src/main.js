@@ -50,7 +50,6 @@ const victoryNameSubmit   = document.getElementById('victory-name-submit');
 const victoryReplayStage  = document.getElementById('victory-replay-stage');
 const victoryReplayCanvas = document.getElementById('victory-replay-canvas');
 const victoryReplayCaption = document.getElementById('victory-replay-caption');
-const celebrationSkipFight = document.getElementById('celebration-skip-fight');
 
 // Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
@@ -332,12 +331,19 @@ function awardPoint(player) {
   if (player === 1) score1++; else score2++;
   p1Pts.textContent = score1;
   p2Pts.textContent = score2;
-  // Boss mode: BOSS itself never "wins" by score — its score is just a
-  // counter — but the player can win by reaching the win threshold first.
-  // (The boss is "endless" from its side; it's the player who has to
-  // outlast it.)
+  // Boss mode: real intent is "P1 wins by reaching the win threshold; BOSS
+  // never wins by score because it's endless from its side." But for now,
+  // the cutscene fires after the FIRST round of any boss match (whoever
+  // scored) so the post-victory sequence can be tested without grinding
+  // the very-hard boss. Flip BOSS_VICTORY_TRIGGER back to 'win' to restore
+  // the real win condition.
+  const BOSS_VICTORY_TRIGGER = 'first-round'; // TEMP: 'first-round' | 'win'
   const win = parseInt(winSl.value);
   if (bossModeActive) {
+    if (BOSS_VICTORY_TRIGGER === 'first-round') {
+      endGame(1);
+      return;
+    }
     if (score1 >= win) endGame(1);
     else endRound();
     return;
@@ -905,25 +911,6 @@ function _commitHeroNameAndAdvance() {
 }
 if (victoryNameSubmit) {
   victoryNameSubmit.addEventListener('click', _commitHeroNameAndAdvance);
-}
-// Skip the boss fight entirely and jump to the post-victory animation —
-// useful for previewing the cutscene without grinding the boss. Triggered
-// from the boss-unlock celebration page (third button under FIGHT THE BOSS).
-if (celebrationSkipFight) {
-  celebrationSkipFight.addEventListener('click', () => {
-    _hideBossUnlockCelebration();
-    // No replay frames since the fight didn't happen — _victoryStageReplay
-    // already handles the empty-buffer case by skipping straight to the
-    // final actions.
-    _bossReplay = [];
-    bossModeActive = false;
-    if (!bossDefeated) {
-      bossDefeated = true;
-      try { localStorage.setItem('snakepong_boss_defeated', '1'); } catch (e) {}
-    }
-    phase = 'gameover';
-    _showBossVictoryCelebration();
-  });
 }
 if (victoryNameField) {
   victoryNameField.addEventListener('keydown', e => {
