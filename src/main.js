@@ -61,6 +61,7 @@ const victoryNameSubmit   = document.getElementById('victory-name-submit');
 const victoryReplayStage  = document.getElementById('victory-replay-stage');
 const victoryReplayCanvas = document.getElementById('victory-replay-canvas');
 const victoryReplayCaption = document.getElementById('victory-replay-caption');
+const victorySkip          = document.getElementById('victory-skip');
 
 // Slider display sync
 lenSl.addEventListener('input',  () => lenV.textContent  = lenSl.value);
@@ -297,7 +298,9 @@ async function runAILocalInference() {
 function _armInsaneShortcut() {
   _insaneShortcut = null;
   if (!aiLocalMode || aiLoadedVariant !== 'insane') return;
-  if (bossUnlocked) return;
+  // Arm on every INSANE round, not just before BOSS is unlocked. Once
+  // BOSS is already unlocked the shortcut still fires the celebration —
+  // it's a recognised secret, not a one-time gate.
   _insaneShortcut = { phase: 'right', alive: true, completed: false, prev: null };
 }
 
@@ -338,9 +341,12 @@ function _stepInsaneShortcut() {
 
 function _triggerInsaneShortcut() {
   _insaneShortcut = null;
-  if (bossUnlocked) return;
-  bossUnlocked = true;
-  try { localStorage.setItem('snakepong_boss_unlocked', '1'); } catch (e) {}
+  // Persist on first trigger, but always show the celebration — the secret
+  // is supposed to feel ceremonial every time you pull it off.
+  if (!bossUnlocked) {
+    bossUnlocked = true;
+    try { localStorage.setItem('snakepong_boss_unlocked', '1'); } catch (e) {}
+  }
   phase = 'gameover';
   stopBgm();
   sfxWin();
@@ -791,6 +797,26 @@ function _victoryStageActions() {
   }
 }
 
+// Skip everything: cancel pending fades/replay timers and jump straight to
+// the final action buttons, hiding the per-stage UI in between.
+function _skipBossVictoryToEnd() {
+  _victoryTimeouts.forEach(clearTimeout);
+  _victoryTimeouts = [];
+  const msg = document.getElementById('victory-message');
+  if (msg) {
+    msg.style.display = 'none';
+    msg.style.opacity = 0;
+  }
+  if (victoryNameInput)   victoryNameInput.style.display = 'none';
+  if (victoryReplayStage) victoryReplayStage.style.display = 'none';
+  // Persist whatever the user typed before skipping, if anything.
+  if (victoryNameField && victoryNameField.value.trim()) {
+    _heroName = victoryNameField.value.trim().slice(0, 32);
+    try { localStorage.setItem(HERO_NAME_KEY, _heroName); } catch (e) {}
+  }
+  _victoryStageActions();
+}
+
 function _hideBossVictoryCelebration() {
   _victoryTimeouts.forEach(clearTimeout);
   _victoryTimeouts = [];
@@ -1222,6 +1248,9 @@ function _commitHeroNameAndAdvance() {
 }
 if (victoryNameSubmit) {
   victoryNameSubmit.addEventListener('click', _commitHeroNameAndAdvance);
+}
+if (victorySkip) {
+  victorySkip.addEventListener('click', _skipBossVictoryToEnd);
 }
 if (victoryNameField) {
   victoryNameField.addEventListener('keydown', e => {
