@@ -21,8 +21,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .dqn import QNetwork, epsilon_greedy_action
+from .actions import epsilon_greedy_action
 from .gym_env import OpponentPolicy
+from .models import QNetwork
 
 
 def make_policy(
@@ -332,7 +333,7 @@ def _load_external_checkpoint(path: str, device: torch.device, head: Optional[in
     head (0..K-1) for bootstrapped nets; None = use net's default output
     (mean-reduced by the downstream action-selection helpers).
     """
-    from .dqn import build_q_net
+    from .models import build_q_net
     from .gym_env import obs_dim
     ckpt = torch.load(path, map_location=device)
     if isinstance(ckpt, dict) and "q_net" in ckpt:

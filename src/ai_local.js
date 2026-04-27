@@ -58,9 +58,7 @@ function _legalActionsP2(s1, s2) {
 // Stochastic-sampling config. When `temperature` > 0 the policy samples
 // from the legal actions instead of taking argmax: scale logits by 1/T,
 // softmax over legal actions, keep the smallest nucleus whose cumulative
-// prob ≥ topP, sample. Only enabled for INSANE — calibrated via
-// rl/insane_temperature_sweep.py (T=0.1 / top-p=0.99 keeps competitive
-// play while making the snake feel less robotic).
+// prob ≥ topP, sample. Currently disabled (every variant uses pure argmax).
 const SAMPLING_BY_VARIANT = {};
 
 export class LocalAI {
@@ -113,8 +111,7 @@ export class LocalAI {
 
     // Pick action among the LEGAL set. Default = argmax (greedy). For
     // variants in SAMPLING_BY_VARIANT, do top-p nucleus sampling at the
-    // configured temperature instead — this is the "stochastic INSANE"
-    // calibrated by rl/insane_temperature_sweep.py.
+    // configured temperature instead.
     const legal = _legalActionsP2(s1, s2);
     const sampling = SAMPLING_BY_VARIANT[this.variant];
     let bestA = -1;

@@ -9,7 +9,7 @@ import { startBgm, stopBgm, pauseBgm, resumeBgm, setBgmStyle,
 import { POWERUP_DEFS, spawnPowerup,
          SPAWN_COOLDOWN_MS, SPAWN_EXPECTED_MS,
          FIELD_EXPIRE_MS }                                from './powerups.js';
-import { WALL_L, WALL_R }                                 from './constants.js';
+import { ROWS, WALL_L, WALL_R }                           from './constants.js';
 import { LocalAI }                                        from './ai_local.js';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -80,6 +80,12 @@ let aiLoadedVariant  = null;
 let bossUnlocked     = (typeof localStorage !== 'undefined' &&
                         localStorage.getItem('snakepong_boss_unlocked') === '1');
 let bossModeActive   = false;
+
+// Hidden INSANE shortcut: at the start of an INSANE round, if P1 walks
+// straight up to the top wall and then straight left into the corner
+// without any other input, BOSS unlocks immediately. `_insaneShortcut`
+// holds the expected path and the head-position cursor along it.
+let _insaneShortcut = null;
 
 // ── RAF loop ──────────────────────────────────────────────────────────────────
 let rafId = null, lastTs = 0;
@@ -205,11 +211,64 @@ async function runAILocalInference() {
   }
 }
 
+// ── INSANE → BOSS shortcut ────────────────────────────────────────────────────
+// If, on the very first round of an INSANE match, P1 walks the head straight
+// up to the top wall and then straight left into the (0, 0) corner — no other
+// inputs, no deviations, no death — BOSS unlocks immediately. The path is
+// the unique L-shape from the spawn cell to the top-left corner.
+function _armInsaneShortcut() {
+  _insaneShortcut = null;
+  if (!aiLocalMode || aiLoadedVariant !== 'insane') return;
+  if (bossUnlocked) return;
+  const hy  = Math.floor(ROWS / 2) - (snakeMultiplier === 3 ? 1 : 0);
+  const h1x = Math.floor(WALL_L / 2);
+  const path = [];
+  for (let y = hy - 1; y >= 0; y--) path.push({ x: h1x, y });   // up phase
+  for (let x = h1x - 1; x >= 0; x--) path.push({ x, y: 0 });    // left phase
+  _insaneShortcut = { path, idx: 0, alive: true, completed: false };
+}
+
+function _stepInsaneShortcut() {
+  const sc = _insaneShortcut;
+  if (!sc || !sc.alive || !s1) return;
+  const head = s1.body[0];
+  const expect = sc.path[sc.idx];
+  if (!expect || head.x !== expect.x || head.y !== expect.y) {
+    sc.alive = false;
+    return;
+  }
+  sc.idx += 1;
+  if (sc.idx >= sc.path.length) {
+    sc.alive = false;
+    sc.completed = true;
+  }
+}
+
+function _triggerInsaneShortcut() {
+  _insaneShortcut = null;
+  if (bossUnlocked) return;
+  bossUnlocked = true;
+  try { localStorage.setItem('snakepong_boss_unlocked', '1'); } catch (e) {}
+  phase = 'gameover';
+  stopBgm();
+  sfxWin();
+  pendingSfx.push('win');
+  _showBossUnlockCelebration();
+  if (onlineRole === 'host') sendState();
+}
+
 // ── Game logic ────────────────────────────────────────────────────────────────
 function tick() {
   if (aiLocalMode) applyAIDirToS2();
-  for (let i = 0; i < (s1.speedMult || 1); i++) stepSnake(s1);
+  for (let i = 0; i < (s1.speedMult || 1); i++) {
+    stepSnake(s1);
+    _stepInsaneShortcut();
+  }
   for (let i = 0; i < (s2.speedMult || 1); i++) stepSnake(s2);
+  if (_insaneShortcut && _insaneShortcut.completed) {
+    _triggerInsaneShortcut();
+    return;
+  }
 
   if (powerupsEnabled) {
     for (const pu of [...powerupsOnField]) {
@@ -342,6 +401,9 @@ function startRound() {
   }
   s1 = ns1; s1.speedMult = 1;
   s2 = ns2; s2.speedMult = 1;
+  _armInsaneShortcut();
+  // Playing locally vs the AI: always serve from P1's side so the human
+  // doesn't have to scramble on the opening tick.
   ball = createBall(aiLocalMode ? -1 : undefined);
   if (powerupsEnabled) resetPowerupState();
   if (aiLocalMode && aiLocal) { aiLocal.reset(); aiPendingDir = null; }

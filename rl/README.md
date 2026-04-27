@@ -1,61 +1,86 @@
-# Snake-Pong RL (self-play DQN)
+# Snake-Pong RL (self-play PPO)
 
-Trains a DQN agent to play Snake-Pong against copies of itself (self-play).
+Trains a PPO actor-critic to play Snake-Pong against copies of itself
+(self-play), with a reservoir-sampled opponent pool and a frozen benchmark
+set for eval. Trained policies are exported to ONNX and served in-browser
+as the tiered AI ladder (`easy → medium → hard → master → insane → boss`).
 
 ## Layout
 
+### Core env + networks
 - `env.py` — headless Python port of `src/logic.js` (no power-ups, 1-tick-per-step).
+- `env_torch.py` — GPU-vectorized env (N parallel games on device).
 - `gym_env.py` — single-agent `gymnasium` wrapper. Observations are
   *egocentric* (board is mirrored for player 2) so one policy plays both sides.
-- `dqn.py` — MLP Q-network, replay buffer, Double-DQN loss.
-- `selfplay.py` — reservoir-sampled opponent pool + fixed benchmark set.
-- `eval.py` — evaluation utilities (used for benchmark evals).
+- `actions.py` — single-obs action helpers (`greedy_action`, `epsilon_greedy_action`).
+- `models.py` — Q-network architectures (`QNetwork`, `DuelingQNetwork`,
+  `BootstrappedQNetwork`, `IndependentEnsembleQNetwork`, `build_q_net`).
+- `ppo_model.py` — `ActorCritic` network and adapters.
 - `render.py` — PIL frame renderer + episode-to-gif recorder.
-- `train.py` — training loop with wandb integration.
-- `play.py` — evaluate / visualize a checkpoint (ANSI or GIF).
+
+### Training
+- `ppo_train.py` — primary PPO trainer (self-play + benchmark eval + wandb).
+- `ppo_iterated.py` — iterated-PPO variant (frozen-opponent stages).
+- `ppo_hill.py` — hill-climbing PPO variant.
+- `ppo_rollout.py` — GPU-resident PPO rollout buffer.
+- `ppo_utils.py` — GAE, KL approximations, LR scheduling.
+- `selfplay.py` — reservoir-sampled opponent pool + frozen benchmark set.
+- `eval.py` — single-env evaluation utilities (used for benchmark evals).
+- `vec_rollout_gpu.py` — GPU obs-batch and Q-action helpers (shared by PPO
+  rollout, det-eval, and tournament).
+
+### Evaluation / tournaments
+- `vec_tournament.py` — vectorized round-robin tournament runner.
+- `big_tournament.py` — multi-checkpoint tournament with mixed-arch loading.
+- `det_eval.py` — deterministic evaluator (forced initial conditions).
+- `parity_test.py` — verifies Python env matches the JS engine.
+- `record_snapshot_video.py` — render gifs of arbitrary checkpoints.
+
+### Analysis
+- `insane_vs_all_dist.py` — INSANE action-distribution sweep vs every tier.
+- `insane_randomized_tournament.py` — round-robin of "randomized INSANE"
+  agents (with prob *p* the agent queries the policy on a y-flipped board).
+
+### Deployment
+- `export_onnx.py` — export checkpoints to ONNX + JSON metadata for
+  in-browser inference (`models/snake-pong-<tier>.onnx`).
 
 ## Install
 
 Requires Python 3.10+, `torch`, `gymnasium`, `numpy`, `Pillow`, `imageio`,
-`wandb`.
+`wandb`, `onnx`, `onnxruntime`.
 
 ```bash
-pip install torch gymnasium numpy Pillow imageio wandb
+pip install torch gymnasium numpy Pillow imageio wandb onnx onnxruntime
 ```
 
 ## Train
 
-Set your wandb API key and start training:
-
 ```bash
 export WANDB_API_KEY=<your_key>
-python -m rl.train --iters 500 --episodes-per-iter 20 --out-dir rl/runs/v1
+python -m rl.ppo_train --iters 500 --out-dir rl/runs/v17
 ```
 
 For local-only / no-network runs:
 
 ```bash
-python -m rl.train --wandb-mode disabled --out-dir rl/runs/local
+python -m rl.ppo_train --wandb-mode disabled --out-dir rl/runs/local
 # or
-WANDB_MODE=offline python -m rl.train --out-dir rl/runs/offline
+WANDB_MODE=offline python -m rl.ppo_train --out-dir rl/runs/offline
 ```
 
-Useful knobs:
+Useful knobs (full list via `python -m rl.ppo_train --help`):
 
 - `--device cuda|cpu`
 - `--snapshot-every N` — snapshot to opponent pool every N iterations
-- `--pool-size N` — reservoir pool capacity (default 30)
+- `--pool-size N` — reservoir pool capacity
 - `--opponent-random-prob P` — probability of sampling a uniform-random
   opponent instead of a snapshot (helps against self-play collapse)
-- `--epsilon-decay-steps N` — linear ε schedule over env steps
 - `--eval-every N` / `--eval-episodes K` — benchmark evaluation cadence
 - `--video-every N` — upload sample gifs every N iters
-- `--video-opponents a,b,c` — which benchmarks to film (default
-  `random,snap_latest`)
 
 Training writes `train_log.jsonl`, periodic checkpoints, and `latest.pt`
-to `--out-dir`, and (when wandb is enabled) logs metrics, uploads sample
-gifs, and registers checkpoint artifacts.
+to `--out-dir`.
 
 ## Catastrophic-forgetting mitigations
 
@@ -64,79 +89,40 @@ opponent pool rolls over. We mitigate this two ways:
 
 1. **Reservoir-sampled opponent pool** (`selfplay.py::OpponentPool`). Every
    historical snapshot has equal probability of remaining in the pool,
-   regardless of age — so training never fully stops seeing old styles.
-   One slot is reserved for the most recent snapshot so the learner is
-   always challenged at its current skill level. Sampling during matches
-   is uniform over the pool.
-2. **Frozen benchmark set** (`selfplay.py::BenchmarkSet`). A separate,
-   immutable collection of opponents: `random`, `snap_first`, `snap_25`,
-   `snap_50`, `snap_75` (captured at 25/50/75% training milestones), and
-   rolling `snap_latest`. Every `--eval-every` iters we run
-   `--eval-episodes` episodes against each and log win/loss/draw rates.
-   **A drop in `eval/snap_first/win_rate` over time is the signal that
-   forgetting is happening.**
+   regardless of age. One slot is reserved for the most recent snapshot.
+2. **Frozen benchmark set** (`selfplay.py::BenchmarkSet`). Immutable
+   opponents: `random`, `snap_first`, `snap_25/50/75`, rolling
+   `snap_latest`. A drop in `eval/snap_first/win_rate` over time is the
+   forgetting signal.
 
-## Play / evaluate
+## Tournaments / evaluation
 
-Self-play (default opponent = same checkpoint, no exploration):
+Round-robin between checkpoints:
 
 ```bash
-python -m rl.play --checkpoint rl/runs/v1/latest.pt --episodes 100
+python -m rl.big_tournament --checkpoints rl/runs/v17/snap_*.pt --games 200
 ```
 
-Versus uniform-random opponent (sanity check):
+Deterministic head-to-head with forced initial conditions:
 
 ```bash
-python -m rl.play --checkpoint rl/runs/v1/latest.pt --vs-random --episodes 200
+python -m rl.det_eval --a rl/runs/v17/best.pt --b rl/runs/v16/best.pt
 ```
 
-Render in terminal:
+Randomized-INSANE perturbation analysis (uses ONNX models in `models/`):
 
 ```bash
-python -m rl.play --checkpoint rl/runs/v1/latest.pt --render --sleep 0.08
+python rl/insane_randomized_tournament.py --games 1000 --p-values 0.0 0.1 0.2 0.3 0.4 0.5
 ```
 
-Save a gif of one episode:
+## Export to ONNX
 
 ```bash
-python -m rl.play --checkpoint rl/runs/v1/latest.pt --render-gif out.gif
+python -m rl.export_onnx --checkpoint rl/runs/v17/best.pt \
+                         --tier insane --out-dir models/
 ```
 
-Versus a different checkpoint:
-
-```bash
-python -m rl.play --checkpoint rl/runs/v1/latest.pt \
-                  --vs-checkpoint rl/runs/v1/checkpoint_iter00100.pt \
-                  --episodes 200
-```
-
-## Play / evaluate
-
-Self-play (default opponent = same checkpoint, no exploration):
-
-```bash
-python -m rl.play --checkpoint rl/runs/v1/latest.pt --episodes 100
-```
-
-Versus uniform-random opponent (sanity check):
-
-```bash
-python -m rl.play --checkpoint rl/runs/v1/latest.pt --vs-random --episodes 200
-```
-
-Render in terminal:
-
-```bash
-python -m rl.play --checkpoint rl/runs/v1/latest.pt --render --sleep 0.08
-```
-
-Versus a different checkpoint:
-
-```bash
-python -m rl.play --checkpoint rl/runs/v1/latest.pt \
-                  --vs-checkpoint rl/runs/v1/checkpoint_iter00100.pt \
-                  --episodes 200
-```
+Produces `models/snake-pong-<tier>.onnx` and `models/snake-pong-<tier>.json`.
 
 ## Reward
 
@@ -158,8 +144,6 @@ Per-agent egocentric flat vector (board mirrored for player 2):
 - Ball: `(x, y, vx, vy)` — position normalized, velocity in `{-1, 0, 1}`.
 
 Total dimension: `4 * snake_length + 4` (= 20 for default `snake_length=4`).
-Snake length is fixed (no power-ups), so no padding / masking needed. The
-Q-network is a 3-hidden-layer MLP.
 
 ## Action
 

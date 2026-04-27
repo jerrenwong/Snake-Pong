@@ -11,8 +11,9 @@ from typing import Optional
 import numpy as np
 import torch
 
-from .dqn import QNetwork, greedy_action
+from .actions import greedy_action
 from .gym_env import SnakePongSelfPlayEnv, OpponentPolicy
+from .models import QNetwork
 
 
 def evaluate(
