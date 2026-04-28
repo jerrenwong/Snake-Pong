@@ -593,12 +593,82 @@ function _hideBossUnlockCelebration() {
 // from endGame() once when P1 reaches the win threshold against BOSS.
 
 const HERO_NAME_KEY = 'snakepong_hero_name';
-const _VICTORY_HOLD_MS  = 3500;
-const _VICTORY_FADE_MS  = 900;
-const _REPLAY_FRAME_MS  = 45;
+const _VICTORY_HOLD_MS  = 3500;   // sentence dwell time at full opacity
+const _VICTORY_FADE_MS  = 900;    // matches CSS transition
+const _REPLAY_FRAME_MS  = 45;     // ~22 fps playback (snappy but readable)
+const _RECORD_W = 720;            // composite-recording canvas size
+const _RECORD_H = 540;
 let _victoryTimeouts = [];
-let _victoryReplayRenderer = null;
+let _victoryReplayRenderer = null;  // lazy-init cached renderer for the replay canvas
+let _recordCanvas = null;           // offscreen canvas drawn each frame for the
+                                    // downloadable video — has the gold frame
+                                    // and hero name baked in.
 let _heroName = '';
+
+// Render one composite frame (background + gold ember frame + hero name +
+// the live game canvas, scaled into the inner area) onto _recordCanvas.
+// Called every replay tick alongside the on-screen draw.
+function _drawCompositeRecordFrame() {
+  if (!_recordCanvas || !victoryReplayCanvas) return;
+  const ctx = _recordCanvas.getContext('2d');
+  const W = _RECORD_W, H = _RECORD_H;
+
+  // Background.
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Radial ember glow behind the frame, mirroring the CSS aurora-frame.
+  const grad = ctx.createRadialGradient(W / 2, H / 2, 40, W / 2, H / 2, W * 0.6);
+  grad.addColorStop(0,   'rgba(40, 20, 0, 0.55)');
+  grad.addColorStop(0.7, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Gold ember-style border.
+  ctx.save();
+  ctx.shadowColor = 'rgba(255, 200, 100, 0.55)';
+  ctx.shadowBlur  = 18;
+  ctx.strokeStyle = 'rgba(255, 200, 100, 0.55)';
+  ctx.lineWidth   = 1.5;
+  ctx.strokeRect(20, 20, W - 40, H - 40);
+  ctx.restore();
+
+  // Hero-name caption near the top of the frame.
+  ctx.save();
+  const heroText = (_heroName || 'THE HERO').toUpperCase();
+  ctx.fillStyle    = '#ffd47a';
+  ctx.font         = '600 17px "Courier New", monospace';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor  = 'rgba(255, 200, 100, 0.7)';
+  ctx.shadowBlur   = 10;
+  // Fake letter-spacing by drawing each char with a wider advance.
+  const tracked = heroText.split('').join(' ');
+  ctx.fillText(tracked, W / 2, 60);
+  ctx.restore();
+
+  // Inner game viewport, preserving the engine's 936:676 aspect ratio.
+  const margin   = 70;
+  const topGap   = 100;
+  const bottomGap = 60;
+  const maxW = W - 2 * margin;
+  const maxH = H - topGap - bottomGap;
+  const ratio = 936 / 676;
+  let gW = maxW, gH = gW / ratio;
+  if (gH > maxH) { gH = maxH; gW = gH * ratio; }
+  const gX = (W - gW) / 2;
+  const gY = topGap + (maxH - gH) / 2;
+
+  // Subtle inner gold outline around the game.
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 200, 100, 0.35)';
+  ctx.lineWidth   = 1;
+  ctx.strokeRect(gX - 1, gY - 1, gW + 2, gH + 2);
+  ctx.restore();
+
+  // The live game canvas was drawn this tick by _victoryReplayRenderer.
+  ctx.drawImage(victoryReplayCanvas, gX, gY, gW, gH);
+}
 
 function _captureBossReplayFrame() {
   if (!s1 || !s2 || !ball) return;
@@ -705,35 +775,55 @@ function _victoryStageReplay() {
   const frames = _bossReplay;
   if (!frames.length) return;
 
-  // Try to set up a MediaRecorder mixing canvas video + master audio. Any
-  // failure (older Safari, missing codecs, browser policy) falls through
-  // to silent unrecorded playback so the cutscene still works.
+  // Build an offscreen canvas that has the gold ember frame, the hero's
+  // name, and the live game scaled into the centre. The recording captures
+  // THIS canvas so the downloaded video has the whole presentation baked
+  // in (the on-screen view stays the bare game canvas + CSS chrome).
+  if (!_recordCanvas) {
+    _recordCanvas = document.createElement('canvas');
+    _recordCanvas.width  = _RECORD_W;
+    _recordCanvas.height = _RECORD_H;
+  }
+
+  // Try to set up a MediaRecorder mixing the composite canvas + master
+  // audio. Prefer MP4 / H.264; fall back to WebM where MP4 isn't supported
+  // (notably Firefox). Any unrecoverable failure falls through to silent
+  // unrecorded playback so the cutscene still works.
   let recorder = null;
+  let recorderExt = 'mp4';
   let recordingFinished = false;
   const recordedChunks = [];
   try {
-    if (typeof MediaRecorder !== 'undefined' && victoryReplayCanvas.captureStream) {
-      const videoStream = victoryReplayCanvas.captureStream(30);
+    if (typeof MediaRecorder !== 'undefined' && _recordCanvas.captureStream) {
+      const videoStream = _recordCanvas.captureStream(30);
       const audioStream = getAudioStream();
       const combined = new MediaStream([
         ...videoStream.getVideoTracks(),
         ...audioStream.getAudioTracks(),
       ]);
       const candidates = [
+        // MP4 / H.264 first. Chrome, Edge, and Safari support these now;
+        // download-as-mp4 is the user-facing ask.
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/mp4;codecs=h264,aac',
+        'video/mp4',
+        // WebM fallback for browsers without MP4 in MediaRecorder.
         'video/webm;codecs=vp9,opus',
         'video/webm;codecs=vp8,opus',
         'video/webm',
       ];
       const mime = candidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
+      recorderExt = (mime && mime.startsWith('video/mp4')) ? 'mp4' : 'webm';
       recorder = new MediaRecorder(combined, mime ? { mimeType: mime } : undefined);
       recorder.ondataavailable = e => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
       recorder.onstop = () => {
-        const blob = new Blob(recordedChunks, { type: recorder.mimeType || 'video/webm' });
+        const blob = new Blob(recordedChunks, { type: recorder.mimeType || `video/${recorderExt}` });
         const url = URL.createObjectURL(blob);
         if (victoryReplayDownload) {
           victoryReplayDownload.href = url;
           victoryReplayDownload.download =
-            `${(_heroName || 'hero').toLowerCase().replace(/\s+/g, '-')}-snake-pong-victory.webm`;
+            `${(_heroName || 'hero').toLowerCase().replace(/\s+/g, '-')}-snake-pong-victory.${recorderExt}`;
           victoryReplayDownload.classList.remove('preparing');
         }
       };
@@ -763,6 +853,7 @@ function _victoryStageReplay() {
     }
     const f = frames[i++];
     _victoryReplayRenderer.draw(f.s1, f.s2, f.ball, [], [], []);
+    _drawCompositeRecordFrame();
     _victoryTimeouts.push(setTimeout(tickPlay, _REPLAY_FRAME_MS));
   };
   tickPlay();
