@@ -596,8 +596,8 @@ const HERO_NAME_KEY = 'snakepong_hero_name';
 const _VICTORY_HOLD_MS  = 3500;   // sentence dwell time at full opacity
 const _VICTORY_FADE_MS  = 900;    // matches CSS transition
 const _REPLAY_FRAME_MS  = 45;     // ~22 fps playback (snappy but readable)
-const _RECORD_W = 1440;           // composite-recording canvas size (2× the
-const _RECORD_H = 1080;           // original 720×540 — sharper download)
+const _RECORD_W = 3840;           // composite-recording canvas size — 4K UHD.
+const _RECORD_H = 2160;           // (Composite chrome scales off W/720.)
 let _victoryTimeouts = [];
 let _victoryReplayRenderer = null;  // lazy-init cached renderer for the replay canvas
 let _recordCanvas = null;           // offscreen canvas drawn each frame for the
@@ -676,13 +676,14 @@ async function _setupMp4Recorder(canvas, audioStream) {
       error: (e) => fail('video-encoder', e),
     });
     videoEncoder.configure({
-      // Constrained-baseline level 4.0 — supports 1920×1080@30, so
-      // 1440×1080@22 fits comfortably. (avc1.42001f was level 3.1, capped
-      // at 720×576 — too small for the bumped composite resolution.)
-      codec: 'avc1.42E028',
+      // Main profile level 5.1 — supports up to 4096×2304, so 4K UHD
+      // (3840×2160) fits. Baseline tops out at 4.2 (1920×1080) and
+      // wouldn't carry this resolution. If the platform encoder doesn't
+      // accept 5.1 we'll fall through to the MediaRecorder WebM path.
+      codec: 'avc1.4D0033',
       width: _RECORD_W,
       height: _RECORD_H,
-      bitrate: 6_000_000,
+      bitrate: 20_000_000,        // ~20 Mbps — appropriate for 4K @ 22 fps
       framerate: 22,
       latencyMode: 'realtime',
     });
@@ -974,7 +975,13 @@ function _victoryStageReplay() {
     ];
     const mime = candidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
     mediaRecorderExt = 'webm';
-    mediaRecorder = new MediaRecorder(combined, mime ? { mimeType: mime } : undefined);
+    mediaRecorder = new MediaRecorder(combined, {
+      ...(mime ? { mimeType: mime } : {}),
+      // ~20 Mbps to keep the 4K composite from compressing into mush in
+      // the WebM fallback path.
+      videoBitsPerSecond: 20_000_000,
+      audioBitsPerSecond: 192_000,
+    });
     mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) mediaChunks.push(e.data); };
     mediaRecorder.onstop = () => {
       const blob = new Blob(mediaChunks, { type: mediaRecorder.mimeType || `video/${mediaRecorderExt}` });
