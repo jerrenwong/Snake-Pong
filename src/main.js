@@ -676,8 +676,8 @@ const HERO_NAME_KEY = 'snakepong_hero_name';
 const _VICTORY_HOLD_MS  = 3500;   // sentence dwell time at full opacity
 const _VICTORY_FADE_MS  = 900;    // matches CSS transition
 const _REPLAY_FRAME_MS  = 45;     // ~22 fps playback (snappy but readable)
-const _RECORD_W = 720;            // composite-recording canvas size
-const _RECORD_H = 540;
+const _RECORD_W = 1440;           // composite-recording canvas size (2× the
+const _RECORD_H = 1080;           // original 720×540 — sharper download)
 let _victoryTimeouts = [];
 let _victoryReplayRenderer = null;  // lazy-init cached renderer for the replay canvas
 let _recordCanvas = null;           // offscreen canvas drawn each frame for the
@@ -756,10 +756,13 @@ async function _setupMp4Recorder(canvas, audioStream) {
       error: (e) => fail('video-encoder', e),
     });
     videoEncoder.configure({
-      codec: 'avc1.42001f',
+      // Constrained-baseline level 4.0 — supports 1920×1080@30, so
+      // 1440×1080@22 fits comfortably. (avc1.42001f was level 3.1, capped
+      // at 720×576 — too small for the bumped composite resolution.)
+      codec: 'avc1.42E028',
       width: _RECORD_W,
       height: _RECORD_H,
-      bitrate: 1_500_000,
+      bitrate: 6_000_000,
       framerate: 22,
       latencyMode: 'realtime',
     });
@@ -836,13 +839,16 @@ function _drawCompositeRecordFrame() {
   if (!_recordCanvas || !victoryReplayCanvas) return;
   const ctx = _recordCanvas.getContext('2d');
   const W = _RECORD_W, H = _RECORD_H;
+  // All chrome dimensions are tuned at the original 720×540 design and
+  // scaled up. Bumping _RECORD_W/H proportionally keeps the look intact.
+  const S = W / 720;
 
   // Background.
   ctx.fillStyle = '#0a0a0a';
   ctx.fillRect(0, 0, W, H);
 
   // Radial ember glow behind the frame, mirroring the CSS aurora-frame.
-  const grad = ctx.createRadialGradient(W / 2, H / 2, 40, W / 2, H / 2, W * 0.6);
+  const grad = ctx.createRadialGradient(W / 2, H / 2, 40 * S, W / 2, H / 2, W * 0.6);
   grad.addColorStop(0,   'rgba(40, 20, 0, 0.55)');
   grad.addColorStop(0.7, 'rgba(0, 0, 0, 0)');
   ctx.fillStyle = grad;
@@ -851,30 +857,30 @@ function _drawCompositeRecordFrame() {
   // Gold ember-style border.
   ctx.save();
   ctx.shadowColor = 'rgba(255, 200, 100, 0.55)';
-  ctx.shadowBlur  = 18;
+  ctx.shadowBlur  = 18 * S;
   ctx.strokeStyle = 'rgba(255, 200, 100, 0.55)';
-  ctx.lineWidth   = 1.5;
-  ctx.strokeRect(20, 20, W - 40, H - 40);
+  ctx.lineWidth   = 1.5 * S;
+  ctx.strokeRect(20 * S, 20 * S, W - 40 * S, H - 40 * S);
   ctx.restore();
 
   // Hero-name caption near the top of the frame.
   ctx.save();
   const heroText = (_heroName || 'THE HERO').toUpperCase();
   ctx.fillStyle    = '#ffd47a';
-  ctx.font         = '600 17px "Courier New", monospace';
+  ctx.font         = `600 ${Math.round(17 * S)}px "Courier New", monospace`;
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'middle';
   ctx.shadowColor  = 'rgba(255, 200, 100, 0.7)';
-  ctx.shadowBlur   = 10;
+  ctx.shadowBlur   = 10 * S;
   // Fake letter-spacing by drawing each char with a wider advance.
   const tracked = heroText.split('').join(' ');
-  ctx.fillText(tracked, W / 2, 60);
+  ctx.fillText(tracked, W / 2, 60 * S);
   ctx.restore();
 
   // Inner game viewport, preserving the engine's 936:676 aspect ratio.
-  const margin   = 70;
-  const topGap   = 100;
-  const bottomGap = 60;
+  const margin   = 70  * S;
+  const topGap   = 100 * S;
+  const bottomGap = 60 * S;
   const maxW = W - 2 * margin;
   const maxH = H - topGap - bottomGap;
   const ratio = 936 / 676;
@@ -886,8 +892,8 @@ function _drawCompositeRecordFrame() {
   // Subtle inner gold outline around the game.
   ctx.save();
   ctx.strokeStyle = 'rgba(255, 200, 100, 0.35)';
-  ctx.lineWidth   = 1;
-  ctx.strokeRect(gX - 1, gY - 1, gW + 2, gH + 2);
+  ctx.lineWidth   = 1 * S;
+  ctx.strokeRect(gX - S, gY - S, gW + 2 * S, gH + 2 * S);
   ctx.restore();
 
   // The live game canvas was drawn this tick by _victoryReplayRenderer.
@@ -944,7 +950,7 @@ function _showBossVictoryCelebration() {
   if (victoryNameField) victoryNameField.value = _heroName;
 
   // Stage i — "THE UNBEATABLE HAS FALLEN".
-  msg.innerHTML = 'THE UNBEATABLE<br>HAS FALLEN.';
+  msg.innerHTML = 'THE UNBEATABLE HAS FALLEN';
   requestAnimationFrame(() => { msg.style.opacity = 1; });
   _victoryTimeouts.push(setTimeout(() => {
     msg.style.opacity = 0;
