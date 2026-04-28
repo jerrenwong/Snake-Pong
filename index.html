@@ -6,7 +6,7 @@
 
   <!-- ── SEO ─────────────────────────────────────────────────────── -->
   <title>Snake Pong — Browser Game with AI Opponents | Snake + Pong Hybrid</title>
-  <meta name="description" content="Snake Pong is a free browser game that fuses Snake and Pong. Play 1v1 locally, online with a friend via room code, or against a trained PPO neural-network AI across six difficulty tiers (easy, medium, hard, master, insane, secret boss). Runs fully in-browser via ONNX Runtime — no install." />
+  <meta name="description" content="Snake Pong is a free browser game that fuses Snake and Pong. Play 1v1 locally or against a trained PPO neural-network AI across six difficulty tiers (easy, medium, hard, master, insane, secret boss). Runs fully in-browser via ONNX Runtime — no install." />
   <meta name="keywords" content="snake pong, snake game, pong game, browser game, free online game, two player game, ai snake game, neural network game, onnx web game, ppo reinforcement learning, snake vs pong, multiplayer browser game" />
   <meta name="author" content="Jer Ren Wong" />
   <meta name="robots" content="index, follow" />
@@ -16,7 +16,7 @@
   <!-- Open Graph (Facebook, LinkedIn, Discord, iMessage previews) -->
   <meta property="og:type" content="website" />
   <meta property="og:title" content="Snake Pong — Browser Game with AI Opponents" />
-  <meta property="og:description" content="A Snake + Pong hybrid: deflect the ball with your snake-paddle. Local 1v1, online room-code multiplayer, or fight six tiers of trained neural-network AI — all in the browser." />
+  <meta property="og:description" content="A Snake + Pong hybrid: deflect the ball with your snake-paddle. Local 1v1 or fight six tiers of trained neural-network AI — all in the browser." />
   <meta property="og:url" content="https://jerrenwong.github.io/Snake-Pong/" />
   <meta property="og:site_name" content="Snake Pong" />
   <meta property="og:image" content="https://jerrenwong.github.io/Snake-Pong/og-image.png" />
@@ -1024,12 +1024,13 @@
         </div>
       </div>
 
-      <!-- Step 1: mode picker (LOCAL / ONLINE / AI) -->
+      <!-- Step 1: mode picker (LOCAL / AI). Online multiplayer lives on
+           the `online` branch — the main branch is the static-hosting
+           build with no WebSocket dependency. -->
       <div id="main-menu">
         <h2 id="ov-title">SNAKE PONG</h2>
         <p id="ov-msg">Deflect the ball past your opponent.<br>Avoid the walls. Snakes can cross the centre.</p>
         <button id="local-btn">LOCAL</button>
-        <button id="online-btn">ONLINE</button>
         <button id="ai-btn">AI</button>
       </div>
 
@@ -1049,27 +1050,6 @@
              play is driven from the tier button instead. -->
         <button id="ai-local-btn" style="display:none;">PLAY</button>
         <button id="ai-back">← BACK</button>
-      </div>
-
-      <!-- Online mode panel -->
-      <div id="online-panel">
-        <h3>Online Multiplayer</h3>
-        <p id="online-status"></p>
-
-        <button id="host-btn">HOST GAME</button>
-        <div id="room-code-wrap">
-          Room code
-          <span id="room-code"></span>
-        </div>
-
-        <div class="online-sep">— OR —</div>
-
-        <div class="online-join-row">
-          <input id="join-code" placeholder="XXXXX" maxlength="5" autocomplete="off" spellcheck="false" />
-          <button id="join-btn">JOIN</button>
-        </div>
-
-        <button id="online-back">← BACK</button>
       </div>
 
     </div>
