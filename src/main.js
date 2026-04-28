@@ -42,7 +42,7 @@ const aiPanel     = document.getElementById('ai-panel');
 const aiBack      = document.getElementById('ai-back');
 const celebrationContinue = document.getElementById('celebration-continue');
 const celebrationBack     = document.getElementById('celebration-back');
-const victoryContinue     = document.getElementById('victory-continue');
+const victoryActions      = document.getElementById('victory-actions');
 const victoryBack         = document.getElementById('victory-back');
 const victoryNameInput    = document.getElementById('victory-name-input');
 const victoryNameField    = document.getElementById('victory-name-field');
@@ -632,7 +632,7 @@ function _showBossVictoryCelebration() {
   msg.style.display = 'block';
   if (victoryNameInput)   victoryNameInput.style.display   = 'none';
   if (victoryReplayStage) victoryReplayStage.style.display = 'none';
-  if (victoryContinue)    victoryContinue.parentElement.classList.remove('visible');
+  if (victoryActions)     victoryActions.classList.remove('visible');
 
   try { _heroName = localStorage.getItem(HERO_NAME_KEY) || ''; } catch (e) { _heroName = ''; }
   if (victoryNameField) victoryNameField.value = _heroName;
@@ -660,10 +660,9 @@ function _victoryStageEternalStory() {
   if (!msg) return;
   msg.style.display = 'block';
   msg.style.opacity = 0;
-  const heroLine = _heroName
-    ? `WE SHALL REMEMBER<br>${_heroName.toUpperCase()}'S STORY.`
-    : 'WE SHALL REMEMBER<br>YOUR STORY.';
-  msg.innerHTML = heroLine;
+  // Don't include the hero's name on this page — the name lives on the
+  // replay caption, this stage is the universal salute.
+  msg.innerHTML = 'WE SHALL REMEMBER<br>YOUR STORY.';
   requestAnimationFrame(() => { msg.style.opacity = 1; });
   _victoryTimeouts.push(setTimeout(() => {
     msg.style.opacity = 0;
@@ -673,7 +672,9 @@ function _victoryStageEternalStory() {
 
 function _victoryStageReplay() {
   // Final stage — replay the boss-victory match on a small canvas while
-  // BGM plays, recording video+audio into a downloadable WebM.
+  // the BGM plays, looping forever. The first loop is captured to a
+  // downloadable WebM (canvas video + master audio); after that the
+  // canvas keeps looping for the player while the file stays available.
   const msg = document.getElementById('victory-message');
   if (msg) msg.style.display = 'none';
   if (!victoryReplayStage || !victoryReplayCanvas) {
@@ -687,21 +688,28 @@ function _victoryStageReplay() {
   if (!_victoryReplayRenderer) {
     _victoryReplayRenderer = createRenderer(victoryReplayCanvas);
   }
+  // Always reveal the download button. It starts in a "preparing" state
+  // (greyed-out, click-blocked) and becomes active once the recorder
+  // finishes writing the first loop.
   if (victoryReplayDownload) {
-    victoryReplayDownload.style.display = 'none';
-    victoryReplayDownload.removeAttribute('href');
+    victoryReplayDownload.classList.add('preparing');
+    if (victoryReplayDownload.href) {
+      try { URL.revokeObjectURL(victoryReplayDownload.href); } catch (e) {}
+      victoryReplayDownload.removeAttribute('href');
+    }
   }
+  // The "back to menu" button stays visible the whole time — there's no
+  // need to wait for the loop to finish since the loop never finishes.
+  _victoryStageActions();
 
   const frames = _bossReplay;
-  if (!frames.length) {
-    _victoryStageActions();
-    return;
-  }
+  if (!frames.length) return;
 
   // Try to set up a MediaRecorder mixing canvas video + master audio. Any
   // failure (older Safari, missing codecs, browser policy) falls through
   // to silent unrecorded playback so the cutscene still works.
   let recorder = null;
+  let recordingFinished = false;
   const recordedChunks = [];
   try {
     if (typeof MediaRecorder !== 'undefined' && victoryReplayCanvas.captureStream) {
@@ -726,7 +734,7 @@ function _victoryStageReplay() {
           victoryReplayDownload.href = url;
           victoryReplayDownload.download =
             `${(_heroName || 'hero').toLowerCase().replace(/\s+/g, '-')}-snake-pong-victory.webm`;
-          victoryReplayDownload.style.display = '';
+          victoryReplayDownload.classList.remove('preparing');
         }
       };
       recorder.start();
@@ -736,21 +744,22 @@ function _victoryStageReplay() {
     recorder = null;
   }
 
-  // Soundtrack the replay with the celebration BGM (the score that played
-  // during the boss fight). It was stopped at endGame; restart it here so
-  // it both plays back and gets baked into the recording.
+  // Soundtrack the replay with the celebration BGM. It was stopped at
+  // endGame; restart it here so the first loop is baked into the file
+  // and subsequent loops still have music for the on-screen replay.
   setBgmStyle('celebration');
   startBgm();
 
   let i = 0;
   const tickPlay = () => {
     if (i >= frames.length) {
-      stopBgm();
-      if (recorder && recorder.state === 'recording') {
+      // End of one loop. Capture the first loop into the downloadable
+      // file; subsequent loops just keep the on-screen replay going.
+      if (!recordingFinished && recorder && recorder.state === 'recording') {
+        recordingFinished = true;
         try { recorder.stop(); } catch (e) { /* ignore */ }
       }
-      _victoryTimeouts.push(setTimeout(_victoryStageActions, 600));
-      return;
+      i = 0;
     }
     const f = frames[i++];
     _victoryReplayRenderer.draw(f.s1, f.s2, f.ball, [], [], []);
@@ -760,9 +769,7 @@ function _victoryStageReplay() {
 }
 
 function _victoryStageActions() {
-  if (victoryContinue && victoryContinue.parentElement) {
-    victoryContinue.parentElement.classList.add('visible');
-  }
+  if (victoryActions) victoryActions.classList.add('visible');
 }
 
 function _hideBossVictoryCelebration() {
@@ -775,13 +782,13 @@ function _hideBossVictoryCelebration() {
   if (cel) cel.style.display = 'none';
   if (victoryReplayStage) victoryReplayStage.style.display = 'none';
   if (victoryNameInput)   victoryNameInput.style.display   = 'none';
-  if (victoryContinue && victoryContinue.parentElement) {
-    victoryContinue.parentElement.classList.remove('visible');
-  }
-  if (victoryReplayDownload && victoryReplayDownload.href) {
-    try { URL.revokeObjectURL(victoryReplayDownload.href); } catch (e) {}
-    victoryReplayDownload.removeAttribute('href');
-    victoryReplayDownload.style.display = 'none';
+  if (victoryActions) victoryActions.classList.remove('visible');
+  if (victoryReplayDownload) {
+    if (victoryReplayDownload.href) {
+      try { URL.revokeObjectURL(victoryReplayDownload.href); } catch (e) {}
+      victoryReplayDownload.removeAttribute('href');
+    }
+    victoryReplayDownload.classList.add('preparing');
   }
 }
 
@@ -971,7 +978,11 @@ function _commitHeroNameAndAdvance() {
       try { localStorage.setItem(HERO_NAME_KEY, _heroName); } catch (e) {}
     }
   }
-  _victoryStageEternalStory();
+  // Hide the input immediately and let the frame settle for one fade
+  // duration before the next sentence appears — gives a clear breath
+  // between "tell me your name" and "we shall remember your story".
+  if (victoryNameInput) victoryNameInput.style.display = 'none';
+  _victoryTimeouts.push(setTimeout(_victoryStageEternalStory, _VICTORY_FADE_MS));
 }
 if (victoryNameSubmit) {
   victoryNameSubmit.addEventListener('click', _commitHeroNameAndAdvance);
@@ -979,13 +990,6 @@ if (victoryNameSubmit) {
 if (victoryNameField) {
   victoryNameField.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); _commitHeroNameAndAdvance(); }
-  });
-}
-if (victoryContinue) {
-  victoryContinue.addEventListener('click', () => {
-    _hideBossVictoryCelebration();
-    bossModeActive = true;
-    _loadAndPlayVariant('boss', null);
   });
 }
 if (victoryBack) {
