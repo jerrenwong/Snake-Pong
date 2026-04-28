@@ -502,13 +502,13 @@ function endGame(winner) {
     _showBossUnlockCelebration();
     return;
   }
-  // Special case: P1 beat the BOSS → iridescent celebration sequence with
-  // hero-name input and a replay of the match.
-  if (winner === 1 && aiLocalMode && bossModeActive) {
-    if (!bossDefeated) {
-      bossDefeated = true;
-      try { localStorage.setItem('snakepong_boss_defeated', '1'); } catch (e) {}
-    }
+  // Special case: P1 beat the BOSS for the FIRST time → gold celebration
+  // sequence with hero-name input and the match replay. Subsequent boss
+  // wins fall through to the standard gameover screen — the cutscene is
+  // a one-time milestone, not a recurring trophy.
+  if (winner === 1 && aiLocalMode && bossModeActive && !bossDefeated) {
+    bossDefeated = true;
+    try { localStorage.setItem('snakepong_boss_defeated', '1'); } catch (e) {}
     _showBossVictoryCelebration();
     return;
   }
