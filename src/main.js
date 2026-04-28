@@ -393,19 +393,10 @@ function awardPoint(player) {
   if (player === 1) score1++; else score2++;
   p1Pts.textContent = score1;
   p2Pts.textContent = score2;
-  // Boss mode: real intent is "P1 wins by reaching the win threshold; BOSS
-  // never wins by score because it's endless from its side." But for now,
-  // the cutscene fires after the FIRST round of any boss match (whoever
-  // scored) so the post-victory sequence can be tested without grinding
-  // the very-hard boss. Flip BOSS_VICTORY_TRIGGER back to 'win' to restore
-  // the real win condition.
-  const BOSS_VICTORY_TRIGGER = 'first-round'; // TEMP: 'first-round' | 'win'
+  // Boss mode: P1 wins by reaching the win threshold; BOSS never wins by
+  // score because it's endless from its side.
   const win = parseInt(winSl.value);
   if (bossModeActive) {
-    if (BOSS_VICTORY_TRIGGER === 'first-round') {
-      endGame(1);
-      return;
-    }
     if (score1 >= win) endGame(1);
     else endRound();
     return;
