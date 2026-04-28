@@ -532,10 +532,10 @@ function endGame(winner) {
 // final sentence stays on screen and reveals the action buttons below.
 const _CELEBRATION_SENTENCES = [
   'CONGRATULATIONS',
-  'NO HAND THAT SHAPED THIS WORLD<br>HAS WALKED THIS FAR.',
-  'A HIDDEN MONSTER<br>HAS BEEN UNLEASHED.',
-  'FEARLESS &nbsp; RESTLESS &nbsp; ENDLESS',
-  'AT 3 TIMES SPEED.',
+  'NO HAND THAT SHAPED THIS WORLD<br>HAS WALKED THIS FAR',
+  'A HIDDEN MONSTER<br>HAS BEEN UNLEASHED',
+  'FEARLESS, RESTLESS, ENDLESS',
+  'AT 3 TIMES SPEED',
 ];
 const _CELEBRATION_HOLD_MS  = 4000;
 const _CELEBRATION_FADE_MS  = 900;
@@ -876,7 +876,7 @@ function _victoryStageEternalStory() {
   msg.style.opacity = 0;
   // Don't include the hero's name on this page — the name lives on the
   // replay caption, this stage is the universal salute.
-  msg.innerHTML = 'WE SHALL REMEMBER<br>YOUR STORY.';
+  msg.innerHTML = 'AND YOUR JOURNEY SHALL BE REMEMBERED';
   requestAnimationFrame(() => { msg.style.opacity = 1; });
   _victoryTimeouts.push(setTimeout(() => {
     msg.style.opacity = 0;
