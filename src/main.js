@@ -832,6 +832,11 @@ function _showBossVictoryCelebration() {
   const msg = document.getElementById('victory-message');
   if (!cel || !msg) return;
 
+  // Pre-fetch mp4-muxer in the background while the player reads the
+  // sentence reveal — by the time we reach the replay stage, the import
+  // is cached and recorder setup is essentially instant.
+  _loadMp4Muxer();
+
   _victoryTimeouts.forEach(clearTimeout);
   _victoryTimeouts = [];
 
@@ -934,16 +939,16 @@ function _victoryStageReplay() {
   //   1. WebCodecs + mp4-muxer → guaranteed .mp4 (Chrome 94+, Edge 94+,
   //      Safari 16.4+, Firefox 130+ etc.). Loaded on demand from CDN.
   //   2. MediaRecorder fallback → .webm (Firefox without WebCodecs, very
-  //      old browsers). Same codepath we had before.
+  //      old browsers).
   //
-  // The on-screen loop starts immediately. The recording activates as
-  // soon as the chosen path is ready; the download button stays in
-  // "preparing" until one full loop has been written.
-  let mp4Encoder        = null;   // WebCodecs path
-  let mediaRecorder     = null;   // MediaRecorder fallback
+  // The on-screen loop is deferred until the recorder is ready — that
+  // way the recording starts at frame 0 of the buffer rather than
+  // wherever an async-racing tickPlay had already advanced to (the bug
+  // that made saved videos appear to "begin from the ending").
+  let mp4Encoder        = null;
+  let mediaRecorder     = null;
   let mediaRecorderExt  = 'webm';
   const mediaChunks     = [];
-  let recordingActive   = false;  // either path is currently encoding frames
   let recordingFinished = false;  // first full loop captured
   let recordingBaseTs   = 0;      // performance.now() when encoding started
 
@@ -973,7 +978,6 @@ function _victoryStageReplay() {
     // ondataavailable events; without it MediaRecorder can flush nothing
     // when stop() arrives before the default ~1 s collection window.
     mediaRecorder.start(100);
-    recordingActive = true;
     recordingBaseTs = performance.now();
   }
 
@@ -989,89 +993,91 @@ function _victoryStageReplay() {
     victoryReplayDownload.classList.remove('preparing');
   }
 
-  // Kick off WebCodecs setup in the background. Falls back to MediaRecorder
-  // if WebCodecs / mp4-muxer aren't available.
+  function _startReplayLoop() {
+    // Soundtrack the replay with the celebration BGM. It was stopped at
+    // endGame; restart it here so the first loop is baked into the file
+    // and subsequent loops still have music for the on-screen replay.
+    setBgmStyle('celebration');
+    startBgm();
+
+    let recordStartFrameIdx = null;
+    let i = 0;
+    const tickPlay = () => {
+      if (i >= frames.length) i = 0;
+
+      const f = frames[i];
+      _victoryReplayRenderer.draw(f.s1, f.s2, f.ball, [], [], []);
+      _drawCompositeRecordFrame();
+
+      // Mid-flight bail-out: if the WebCodecs path silently failed,
+      // drop it, set up MediaRecorder, and rewind to frame 0 so the
+      // recording still begins at the start of the match.
+      if (mp4Encoder && mp4Encoder.failed && mp4Encoder.failed()) {
+        console.warn('[boss-victory] mp4 path failed; switching to MediaRecorder');
+        mp4Encoder = null;
+        recordStartFrameIdx = null;
+        try { _setupMediaRecorderFallback(); }
+        catch (e) { console.warn('[boss-victory] fallback setup failed:', e); }
+        i = 0;
+        _victoryTimeouts.push(setTimeout(tickPlay, _REPLAY_FRAME_MS));
+        return;
+      }
+
+      const recordingActive = !!(mp4Encoder || (mediaRecorder && mediaRecorder.state === 'recording'));
+      if (recordingActive && !recordingFinished) {
+        if (recordStartFrameIdx === null) {
+          recordStartFrameIdx = i;
+        } else if (i === recordStartFrameIdx) {
+          // Full circle — exactly one loop is captured. Finalise.
+          recordingFinished = true;
+          if (mp4Encoder) {
+            mp4Encoder.finalize()
+              .then(blob => _surfaceDownload(blob, 'mp4'))
+              .catch(e => {
+                console.warn('[boss-victory] mp4 finalise failed; falling back to WebM:', e);
+                recordingFinished = false;
+                recordStartFrameIdx = null;
+                mp4Encoder = null;
+                try { _setupMediaRecorderFallback(); }
+                catch (e2) { console.warn('[boss-victory] fallback setup failed:', e2); }
+                i = 0;
+              });
+          } else if (mediaRecorder && mediaRecorder.state === 'recording') {
+            try { mediaRecorder.stop(); } catch (e) {}
+          }
+        }
+        if (mp4Encoder && !recordingFinished) {
+          const tsUs = Math.max(0, (performance.now() - recordingBaseTs) * 1000) | 0;
+          mp4Encoder.encodeFrame(tsUs);
+        }
+      }
+
+      i++;
+      _victoryTimeouts.push(setTimeout(tickPlay, _REPLAY_FRAME_MS));
+    };
+    tickPlay();
+  }
+
+  // Kick off WebCodecs setup. Only START the on-screen + recording loop
+  // once the chosen path is ready — that way the recording captures from
+  // frame 0 of _bossReplay rather than wherever a racing tickPlay had
+  // already advanced to (the bug that made saved videos appear to start
+  // from the ending of the match).
   _setupMp4Recorder(_recordCanvas, audioStream).then(rec => {
     if (rec) {
       mp4Encoder = rec;
-      recordingActive = true;
       recordingBaseTs = performance.now();
     } else {
       try { _setupMediaRecorderFallback(); }
       catch (e) { console.warn('[boss-victory] recording unavailable:', e); }
     }
-  }).catch(() => {
+    _startReplayLoop();
+  }).catch(e => {
+    console.warn('[boss-victory] mp4 setup error:', e);
     try { _setupMediaRecorderFallback(); }
-    catch (e) { console.warn('[boss-victory] recording unavailable:', e); }
+    catch (e2) { console.warn('[boss-victory] recording unavailable:', e2); }
+    _startReplayLoop();
   });
-
-  // Soundtrack the replay with the celebration BGM. It was stopped at
-  // endGame; restart it here so the first loop is baked into the file
-  // and subsequent loops still have music for the on-screen replay.
-  setBgmStyle('celebration');
-  startBgm();
-
-  // Track which frame index recording started on so we can finalise after
-  // exactly one full loop's worth of frames has been written.
-  let recordStartFrameIdx = null;
-
-  let i = 0;
-  const tickPlay = () => {
-    if (i >= frames.length) i = 0;
-
-    const f = frames[i];
-    _victoryReplayRenderer.draw(f.s1, f.s2, f.ball, [], [], []);
-    _drawCompositeRecordFrame();
-
-    // Mid-flight bail-out: if the WebCodecs path silently failed (encoder
-    // error, muxer reject), drop it now and start the MediaRecorder
-    // fallback so we still produce a downloadable file (just .webm).
-    if (mp4Encoder && mp4Encoder.failed && mp4Encoder.failed()) {
-      console.warn('[boss-victory] mp4 path failed; switching to MediaRecorder');
-      mp4Encoder = null;
-      recordingActive = false;
-      recordStartFrameIdx = null;
-      try { _setupMediaRecorderFallback(); }
-      catch (e) { console.warn('[boss-victory] fallback setup failed:', e); }
-    }
-
-    if (recordingActive && !recordingFinished) {
-      if (recordStartFrameIdx === null) {
-        recordStartFrameIdx = i;
-      } else if (i === recordStartFrameIdx) {
-        // We've come full circle from the frame recording started on —
-        // exactly one loop is captured. Finalise and don't encode this
-        // duplicate frame.
-        recordingFinished = true;
-        if (mp4Encoder) {
-          mp4Encoder.finalize()
-            .then(blob => _surfaceDownload(blob, 'mp4'))
-            .catch(e => {
-              console.warn('[boss-victory] mp4 finalise failed; falling back to WebM:', e);
-              recordingFinished = false;
-              recordStartFrameIdx = null;
-              mp4Encoder = null;
-              try { _setupMediaRecorderFallback(); }
-              catch (e2) { console.warn('[boss-victory] fallback setup failed:', e2); }
-            });
-        } else if (mediaRecorder && mediaRecorder.state === 'recording') {
-          try { mediaRecorder.stop(); } catch (e) {}
-        }
-      }
-      if (mp4Encoder && !recordingFinished) {
-        const tsUs = Math.max(0, (performance.now() - recordingBaseTs) * 1000) | 0;
-        const ok = mp4Encoder.encodeFrame(tsUs);
-        if (!ok && mp4Encoder.failed && mp4Encoder.failed()) {
-          // encodeFrame caught the error itself; the next tick will see
-          // the .failed() flag and switch to the fallback path.
-        }
-      }
-    }
-
-    i++;
-    _victoryTimeouts.push(setTimeout(tickPlay, _REPLAY_FRAME_MS));
-  };
-  tickPlay();
 }
 
 function _victoryStageActions() {
