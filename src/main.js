@@ -687,10 +687,30 @@ let _mp4MuxerModulePromise = null;  // cached dynamic-import promise for mp4-mux
 
 // mp4-muxer ESM, loaded on demand the first time a player reaches the
 // boss-victory replay. Cached so subsequent victories don't re-fetch.
+// Tries several CDNs in order — esm.sh and jsdelivr have intermittently
+// failed for the same package on different days.
 function _loadMp4Muxer() {
   if (_mp4MuxerModulePromise) return _mp4MuxerModulePromise;
-  _mp4MuxerModulePromise = import('https://cdn.jsdelivr.net/npm/mp4-muxer@5/+esm')
-    .catch(e => { console.warn('[boss-victory] mp4-muxer load failed:', e); return null; });
+  const urls = [
+    'https://esm.sh/mp4-muxer@5',
+    'https://cdn.jsdelivr.net/npm/mp4-muxer@5/+esm',
+    'https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.4/build/mp4-muxer.mjs',
+    'https://unpkg.com/mp4-muxer@5/build/mp4-muxer.mjs',
+  ];
+  _mp4MuxerModulePromise = (async () => {
+    for (const url of urls) {
+      try {
+        const mod = await import(url);
+        if (mod && (mod.Muxer || (mod.default && mod.default.Muxer))) {
+          console.info('[boss-victory] mp4-muxer loaded from', url);
+          return mod;
+        }
+      } catch (e) {
+        console.warn('[boss-victory] mp4-muxer load failed for', url, e);
+      }
+    }
+    return null;
+  })();
   return _mp4MuxerModulePromise;
 }
 
@@ -706,74 +726,103 @@ async function _setupMp4Recorder(canvas, audioStream) {
     || (muxerMod.default && muxerMod.default.ArrayBufferTarget);
   if (!Muxer || !ArrayBufferTarget) return null;
 
-  const muxer = new Muxer({
-    target: new ArrayBufferTarget(),
-    video: { codec: 'avc', width: _RECORD_W, height: _RECORD_H },
-    audio: { codec: 'aac', numberOfChannels: 2, sampleRate: 48000 },
-    fastStart: 'in-memory',
-    firstTimestampBehavior: 'offset',
-  });
+  // Match the audio config to the actual track (sample rate / channel count
+  // mismatches are a common silent-fail mode for AudioEncoder.encode).
+  const audioTrack = audioStream && audioStream.getAudioTracks && audioStream.getAudioTracks()[0];
+  const trackSettings = audioTrack && audioTrack.getSettings ? audioTrack.getSettings() : {};
+  const sampleRate  = trackSettings.sampleRate  || 48000;
+  const numChannels = trackSettings.channelCount || 2;
 
-  const videoEncoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    error: (e) => console.warn('[boss-victory] video encode err:', e),
-  });
-  videoEncoder.configure({
-    codec: 'avc1.42001f',  // H.264 baseline 3.1
-    width: _RECORD_W,
-    height: _RECORD_H,
-    bitrate: 1_500_000,
-    framerate: 22,
-  });
+  let mp4Failed = false;
+  const fail = (where, e) => { console.warn('[boss-victory] mp4', where, 'failed:', e); mp4Failed = true; };
 
-  // Audio encoder + pump from the master-audio MediaStream. If WebCodecs
-  // audio bits are missing we just write a silent video.
+  let muxer;
+  try {
+    muxer = new Muxer({
+      target: new ArrayBufferTarget(),
+      video: { codec: 'avc', width: _RECORD_W, height: _RECORD_H },
+      audio: { codec: 'aac', numberOfChannels: numChannels, sampleRate },
+      fastStart: 'in-memory',
+      firstTimestampBehavior: 'offset',
+    });
+  } catch (e) { fail('muxer-init', e); return null; }
+
+  let videoEncoder;
+  try {
+    videoEncoder = new VideoEncoder({
+      output: (chunk, meta) => {
+        try { muxer.addVideoChunk(chunk, meta); } catch (e) { fail('addVideoChunk', e); }
+      },
+      error: (e) => fail('video-encoder', e),
+    });
+    videoEncoder.configure({
+      codec: 'avc1.42001f',
+      width: _RECORD_W,
+      height: _RECORD_H,
+      bitrate: 1_500_000,
+      framerate: 22,
+      latencyMode: 'realtime',
+    });
+  } catch (e) { fail('video-configure', e); return null; }
+
   let audioEncoder = null;
   let audioReader = null;
   let audioAborted = false;
-  const audioTrack = audioStream && audioStream.getAudioTracks && audioStream.getAudioTracks()[0];
   if (audioTrack && typeof AudioEncoder !== 'undefined' && typeof MediaStreamTrackProcessor !== 'undefined') {
-    audioEncoder = new AudioEncoder({
-      output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-      error: (e) => console.warn('[boss-victory] audio encode err:', e),
-    });
-    audioEncoder.configure({
-      codec: 'mp4a.40.2',  // AAC-LC
-      numberOfChannels: 2,
-      sampleRate: 48000,
-      bitrate: 128_000,
-    });
-    const proc = new MediaStreamTrackProcessor({ track: audioTrack });
-    audioReader = proc.readable.getReader();
-    (async () => {
-      while (!audioAborted) {
-        let res;
-        try { res = await audioReader.read(); } catch (e) { break; }
-        if (res.done) break;
-        try { audioEncoder.encode(res.value); } catch (e) { /* ignore */ }
-        res.value.close();
-      }
-    })();
+    try {
+      audioEncoder = new AudioEncoder({
+        output: (chunk, meta) => {
+          try { muxer.addAudioChunk(chunk, meta); } catch (e) { fail('addAudioChunk', e); }
+        },
+        error: (e) => console.warn('[boss-victory] audio encode err:', e),
+      });
+      audioEncoder.configure({
+        codec: 'mp4a.40.2',
+        numberOfChannels: numChannels,
+        sampleRate,
+        bitrate: 128_000,
+      });
+      const proc = new MediaStreamTrackProcessor({ track: audioTrack });
+      audioReader = proc.readable.getReader();
+      (async () => {
+        while (!audioAborted) {
+          let res;
+          try { res = await audioReader.read(); } catch (e) { break; }
+          if (res.done) break;
+          try { audioEncoder.encode(res.value); } catch (e) { /* ignore */ }
+          res.value.close();
+        }
+      })();
+    } catch (e) {
+      console.warn('[boss-victory] audio configure failed (continuing without audio):', e);
+      audioEncoder = null;
+      audioReader = null;
+    }
   }
 
   let frameCount = 0;
   return {
     encodeFrame(timestampUs) {
+      if (mp4Failed) return false;
       let frame;
-      try {
-        frame = new VideoFrame(canvas, { timestamp: timestampUs });
-      } catch (e) { return; }
-      const isKey = frameCount % 22 === 0;  // ~1 keyframe per second
-      try { videoEncoder.encode(frame, { keyFrame: isKey }); } catch (e) { /* ignore */ }
+      try { frame = new VideoFrame(canvas, { timestamp: timestampUs }); }
+      catch (e) { fail('VideoFrame', e); return false; }
+      const isKey = frameCount % 22 === 0;
+      try { videoEncoder.encode(frame, { keyFrame: isKey }); }
+      catch (e) { fail('encode', e); }
       frame.close();
       frameCount++;
+      return !mp4Failed;
     },
+    failed() { return mp4Failed; },
     async finalize() {
       audioAborted = true;
       if (audioReader) { try { await audioReader.cancel(); } catch (e) {} }
-      try { await videoEncoder.flush(); } catch (e) {}
+      try { await videoEncoder.flush(); } catch (e) { fail('video-flush', e); }
       if (audioEncoder) { try { await audioEncoder.flush(); } catch (e) {} }
-      muxer.finalize();
+      if (mp4Failed) throw new Error('mp4 encoding failed');
+      try { muxer.finalize(); }
+      catch (e) { fail('muxer-finalize', e); throw e; }
       return new Blob([muxer.target.buffer], { type: 'video/mp4' });
     },
   };
@@ -1011,7 +1060,10 @@ function _victoryStageReplay() {
       const blob = new Blob(mediaChunks, { type: mediaRecorder.mimeType || `video/${mediaRecorderExt}` });
       _surfaceDownload(blob, mediaRecorderExt);
     };
-    mediaRecorder.start();
+    // 100 ms timeslice ensures short loops (a few seconds) still produce
+    // ondataavailable events; without it MediaRecorder can flush nothing
+    // when stop() arrives before the default ~1 s collection window.
+    mediaRecorder.start(100);
     recordingActive = true;
     recordingBaseTs = performance.now();
   }
@@ -1062,6 +1114,18 @@ function _victoryStageReplay() {
     _victoryReplayRenderer.draw(f.s1, f.s2, f.ball, [], [], []);
     _drawCompositeRecordFrame();
 
+    // Mid-flight bail-out: if the WebCodecs path silently failed (encoder
+    // error, muxer reject), drop it now and start the MediaRecorder
+    // fallback so we still produce a downloadable file (just .webm).
+    if (mp4Encoder && mp4Encoder.failed && mp4Encoder.failed()) {
+      console.warn('[boss-victory] mp4 path failed; switching to MediaRecorder');
+      mp4Encoder = null;
+      recordingActive = false;
+      recordStartFrameIdx = null;
+      try { _setupMediaRecorderFallback(); }
+      catch (e) { console.warn('[boss-victory] fallback setup failed:', e); }
+    }
+
     if (recordingActive && !recordingFinished) {
       if (recordStartFrameIdx === null) {
         recordStartFrameIdx = i;
@@ -1071,15 +1135,27 @@ function _victoryStageReplay() {
         // duplicate frame.
         recordingFinished = true;
         if (mp4Encoder) {
-          mp4Encoder.finalize().then(blob => _surfaceDownload(blob, 'mp4'))
-            .catch(e => console.warn('[boss-victory] mp4 finalise failed:', e));
+          mp4Encoder.finalize()
+            .then(blob => _surfaceDownload(blob, 'mp4'))
+            .catch(e => {
+              console.warn('[boss-victory] mp4 finalise failed; falling back to WebM:', e);
+              recordingFinished = false;
+              recordStartFrameIdx = null;
+              mp4Encoder = null;
+              try { _setupMediaRecorderFallback(); }
+              catch (e2) { console.warn('[boss-victory] fallback setup failed:', e2); }
+            });
         } else if (mediaRecorder && mediaRecorder.state === 'recording') {
           try { mediaRecorder.stop(); } catch (e) {}
         }
       }
       if (mp4Encoder && !recordingFinished) {
         const tsUs = Math.max(0, (performance.now() - recordingBaseTs) * 1000) | 0;
-        mp4Encoder.encodeFrame(tsUs);
+        const ok = mp4Encoder.encodeFrame(tsUs);
+        if (!ok && mp4Encoder.failed && mp4Encoder.failed()) {
+          // encodeFrame caught the error itself; the next tick will see
+          // the .failed() flag and switch to the fallback path.
+        }
       }
     }
 
