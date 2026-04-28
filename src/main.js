@@ -603,6 +603,101 @@ let _victoryReplayRenderer = null;  // lazy-init cached renderer for the replay 
 let _recordCanvas = null;           // offscreen canvas drawn each frame for the
                                     // downloadable video — has the gold frame
                                     // and hero name baked in.
+let _mp4MuxerModulePromise = null;  // cached dynamic-import promise for mp4-muxer
+
+// mp4-muxer ESM, loaded on demand the first time a player reaches the
+// boss-victory replay. Cached so subsequent victories don't re-fetch.
+function _loadMp4Muxer() {
+  if (_mp4MuxerModulePromise) return _mp4MuxerModulePromise;
+  _mp4MuxerModulePromise = import('https://cdn.jsdelivr.net/npm/mp4-muxer@5/+esm')
+    .catch(e => { console.warn('[boss-victory] mp4-muxer load failed:', e); return null; });
+  return _mp4MuxerModulePromise;
+}
+
+// Set up an MP4 encoder backed by WebCodecs + mp4-muxer. Returns a small
+// controller `{ encodeFrame(ts), finalize() -> Promise<Blob> }`, or null if
+// WebCodecs / the muxer aren't available — caller falls back to WebM.
+async function _setupMp4Recorder(canvas, audioStream) {
+  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') return null;
+  const muxerMod = await _loadMp4Muxer();
+  if (!muxerMod) return null;
+  const Muxer = muxerMod.Muxer || (muxerMod.default && muxerMod.default.Muxer);
+  const ArrayBufferTarget = muxerMod.ArrayBufferTarget
+    || (muxerMod.default && muxerMod.default.ArrayBufferTarget);
+  if (!Muxer || !ArrayBufferTarget) return null;
+
+  const muxer = new Muxer({
+    target: new ArrayBufferTarget(),
+    video: { codec: 'avc', width: _RECORD_W, height: _RECORD_H },
+    audio: { codec: 'aac', numberOfChannels: 2, sampleRate: 48000 },
+    fastStart: 'in-memory',
+    firstTimestampBehavior: 'offset',
+  });
+
+  const videoEncoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (e) => console.warn('[boss-victory] video encode err:', e),
+  });
+  videoEncoder.configure({
+    codec: 'avc1.42001f',  // H.264 baseline 3.1
+    width: _RECORD_W,
+    height: _RECORD_H,
+    bitrate: 1_500_000,
+    framerate: 22,
+  });
+
+  // Audio encoder + pump from the master-audio MediaStream. If WebCodecs
+  // audio bits are missing we just write a silent video.
+  let audioEncoder = null;
+  let audioReader = null;
+  let audioAborted = false;
+  const audioTrack = audioStream && audioStream.getAudioTracks && audioStream.getAudioTracks()[0];
+  if (audioTrack && typeof AudioEncoder !== 'undefined' && typeof MediaStreamTrackProcessor !== 'undefined') {
+    audioEncoder = new AudioEncoder({
+      output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+      error: (e) => console.warn('[boss-victory] audio encode err:', e),
+    });
+    audioEncoder.configure({
+      codec: 'mp4a.40.2',  // AAC-LC
+      numberOfChannels: 2,
+      sampleRate: 48000,
+      bitrate: 128_000,
+    });
+    const proc = new MediaStreamTrackProcessor({ track: audioTrack });
+    audioReader = proc.readable.getReader();
+    (async () => {
+      while (!audioAborted) {
+        let res;
+        try { res = await audioReader.read(); } catch (e) { break; }
+        if (res.done) break;
+        try { audioEncoder.encode(res.value); } catch (e) { /* ignore */ }
+        res.value.close();
+      }
+    })();
+  }
+
+  let frameCount = 0;
+  return {
+    encodeFrame(timestampUs) {
+      let frame;
+      try {
+        frame = new VideoFrame(canvas, { timestamp: timestampUs });
+      } catch (e) { return; }
+      const isKey = frameCount % 22 === 0;  // ~1 keyframe per second
+      try { videoEncoder.encode(frame, { keyFrame: isKey }); } catch (e) { /* ignore */ }
+      frame.close();
+      frameCount++;
+    },
+    async finalize() {
+      audioAborted = true;
+      if (audioReader) { try { await audioReader.cancel(); } catch (e) {} }
+      try { await videoEncoder.flush(); } catch (e) {}
+      if (audioEncoder) { try { await audioEncoder.flush(); } catch (e) {} }
+      muxer.finalize();
+      return new Blob([muxer.target.buffer], { type: 'video/mp4' });
+    },
+  };
+}
 let _heroName = '';
 
 // Render one composite frame (background + gold ember frame + hero name +
@@ -785,54 +880,78 @@ function _victoryStageReplay() {
     _recordCanvas.height = _RECORD_H;
   }
 
-  // Try to set up a MediaRecorder mixing the composite canvas + master
-  // audio. Prefer MP4 / H.264; fall back to WebM where MP4 isn't supported
-  // (notably Firefox). Any unrecoverable failure falls through to silent
-  // unrecorded playback so the cutscene still works.
-  let recorder = null;
-  let recorderExt = 'mp4';
-  let recordingFinished = false;
-  const recordedChunks = [];
-  try {
-    if (typeof MediaRecorder !== 'undefined' && _recordCanvas.captureStream) {
-      const videoStream = _recordCanvas.captureStream(30);
-      const audioStream = getAudioStream();
-      const combined = new MediaStream([
-        ...videoStream.getVideoTracks(),
-        ...audioStream.getAudioTracks(),
-      ]);
-      const candidates = [
-        // MP4 / H.264 first. Chrome, Edge, and Safari support these now;
-        // download-as-mp4 is the user-facing ask.
-        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-        'video/mp4;codecs=avc1,mp4a.40.2',
-        'video/mp4;codecs=h264,aac',
-        'video/mp4',
-        // WebM fallback for browsers without MP4 in MediaRecorder.
-        'video/webm;codecs=vp9,opus',
-        'video/webm;codecs=vp8,opus',
-        'video/webm',
-      ];
-      const mime = candidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
-      recorderExt = (mime && mime.startsWith('video/mp4')) ? 'mp4' : 'webm';
-      recorder = new MediaRecorder(combined, mime ? { mimeType: mime } : undefined);
-      recorder.ondataavailable = e => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
-      recorder.onstop = () => {
-        const blob = new Blob(recordedChunks, { type: recorder.mimeType || `video/${recorderExt}` });
-        const url = URL.createObjectURL(blob);
-        if (victoryReplayDownload) {
-          victoryReplayDownload.href = url;
-          victoryReplayDownload.download =
-            `${(_heroName || 'hero').toLowerCase().replace(/\s+/g, '-')}-snake-pong-victory.${recorderExt}`;
-          victoryReplayDownload.classList.remove('preparing');
-        }
-      };
-      recorder.start();
-    }
-  } catch (e) {
-    console.warn('[boss-victory] recording unavailable:', e);
-    recorder = null;
+  // Two recording paths, picked at runtime:
+  //
+  //   1. WebCodecs + mp4-muxer → guaranteed .mp4 (Chrome 94+, Edge 94+,
+  //      Safari 16.4+, Firefox 130+ etc.). Loaded on demand from CDN.
+  //   2. MediaRecorder fallback → .webm (Firefox without WebCodecs, very
+  //      old browsers). Same codepath we had before.
+  //
+  // The on-screen loop starts immediately. The recording activates as
+  // soon as the chosen path is ready; the download button stays in
+  // "preparing" until one full loop has been written.
+  let mp4Encoder        = null;   // WebCodecs path
+  let mediaRecorder     = null;   // MediaRecorder fallback
+  let mediaRecorderExt  = 'webm';
+  const mediaChunks     = [];
+  let recordingActive   = false;  // either path is currently encoding frames
+  let recordingFinished = false;  // first full loop captured
+  let recordingBaseTs   = 0;      // performance.now() when encoding started
+
+  const audioStream = getAudioStream();
+
+  function _setupMediaRecorderFallback() {
+    if (typeof MediaRecorder === 'undefined' || !_recordCanvas.captureStream) return;
+    const videoStream = _recordCanvas.captureStream(30);
+    const combined = new MediaStream([
+      ...videoStream.getVideoTracks(),
+      ...audioStream.getAudioTracks(),
+    ]);
+    const candidates = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+    ];
+    const mime = candidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
+    mediaRecorderExt = 'webm';
+    mediaRecorder = new MediaRecorder(combined, mime ? { mimeType: mime } : undefined);
+    mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) mediaChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(mediaChunks, { type: mediaRecorder.mimeType || `video/${mediaRecorderExt}` });
+      _surfaceDownload(blob, mediaRecorderExt);
+    };
+    mediaRecorder.start();
+    recordingActive = true;
+    recordingBaseTs = performance.now();
   }
+
+  function _surfaceDownload(blob, ext) {
+    if (!victoryReplayDownload) return;
+    if (victoryReplayDownload.href) {
+      try { URL.revokeObjectURL(victoryReplayDownload.href); } catch (e) {}
+    }
+    const url = URL.createObjectURL(blob);
+    victoryReplayDownload.href = url;
+    victoryReplayDownload.download =
+      `${(_heroName || 'hero').toLowerCase().replace(/\s+/g, '-')}-snake-pong-victory.${ext}`;
+    victoryReplayDownload.classList.remove('preparing');
+  }
+
+  // Kick off WebCodecs setup in the background. Falls back to MediaRecorder
+  // if WebCodecs / mp4-muxer aren't available.
+  _setupMp4Recorder(_recordCanvas, audioStream).then(rec => {
+    if (rec) {
+      mp4Encoder = rec;
+      recordingActive = true;
+      recordingBaseTs = performance.now();
+    } else {
+      try { _setupMediaRecorderFallback(); }
+      catch (e) { console.warn('[boss-victory] recording unavailable:', e); }
+    }
+  }).catch(() => {
+    try { _setupMediaRecorderFallback(); }
+    catch (e) { console.warn('[boss-victory] recording unavailable:', e); }
+  });
 
   // Soundtrack the replay with the celebration BGM. It was stopped at
   // endGame; restart it here so the first loop is baked into the file
@@ -840,20 +959,40 @@ function _victoryStageReplay() {
   setBgmStyle('celebration');
   startBgm();
 
+  // Track which frame index recording started on so we can finalise after
+  // exactly one full loop's worth of frames has been written.
+  let recordStartFrameIdx = null;
+
   let i = 0;
   const tickPlay = () => {
-    if (i >= frames.length) {
-      // End of one loop. Capture the first loop into the downloadable
-      // file; subsequent loops just keep the on-screen replay going.
-      if (!recordingFinished && recorder && recorder.state === 'recording') {
-        recordingFinished = true;
-        try { recorder.stop(); } catch (e) { /* ignore */ }
-      }
-      i = 0;
-    }
-    const f = frames[i++];
+    if (i >= frames.length) i = 0;
+
+    const f = frames[i];
     _victoryReplayRenderer.draw(f.s1, f.s2, f.ball, [], [], []);
     _drawCompositeRecordFrame();
+
+    if (recordingActive && !recordingFinished) {
+      if (recordStartFrameIdx === null) {
+        recordStartFrameIdx = i;
+      } else if (i === recordStartFrameIdx) {
+        // We've come full circle from the frame recording started on —
+        // exactly one loop is captured. Finalise and don't encode this
+        // duplicate frame.
+        recordingFinished = true;
+        if (mp4Encoder) {
+          mp4Encoder.finalize().then(blob => _surfaceDownload(blob, 'mp4'))
+            .catch(e => console.warn('[boss-victory] mp4 finalise failed:', e));
+        } else if (mediaRecorder && mediaRecorder.state === 'recording') {
+          try { mediaRecorder.stop(); } catch (e) {}
+        }
+      }
+      if (mp4Encoder && !recordingFinished) {
+        const tsUs = Math.max(0, (performance.now() - recordingBaseTs) * 1000) | 0;
+        mp4Encoder.encodeFrame(tsUs);
+      }
+    }
+
+    i++;
     _victoryTimeouts.push(setTimeout(tickPlay, _REPLAY_FRAME_MS));
   };
   tickPlay();
