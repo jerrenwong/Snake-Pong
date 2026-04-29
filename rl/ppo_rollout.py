@@ -56,6 +56,9 @@ class PPORollout:
         bf16: bool = False,
         learner_safety_filter: bool = False,
         rng: Optional[np.random.Generator] = None,
+        win_reward: float = 1.0,
+        draw_reward: float = 0.0,
+        loss_reward: float = -1.0,
     ):
         self.n_envs = n_envs
         self.rollout_steps = rollout_steps
@@ -72,6 +75,12 @@ class PPORollout:
         # with Φ(terminal) = 0. Set shape_coef=0 to disable.
         self.shape_coef = shape_coef
         self.shape_gamma = shape_gamma
+        # Asymmetric outcome rewards. Default (1, 0, -1) is win-loss with
+        # neutral draw. Set draw_reward != 0 for offensive (negative draw
+        # penalty) or defensive (positive draw bonus) play styles.
+        self.win_reward = float(win_reward)
+        self.draw_reward = float(draw_reward)
+        self.loss_reward = float(loss_reward)
         # bf16 autocast for actor/critic/opponent forwards during rollout.
         # Doesn't change stored logits/values (we cast back to fp32 in the
         # rollout loop) — just speeds up the big matmuls on Ampere+.
@@ -299,7 +308,18 @@ class PPORollout:
             scorer = result["scorer"]
             won = (scorer.to(torch.int64) == self.learner_sides)
             lost = (scorer != 0) & (scorer != 3) & ~won
-            reward = torch.where(won, 1.0, torch.where(lost, -1.0, 0.0)).to(torch.float32)
+            # Draw = episode ends without a clear winner (truncation /
+            # double-KO / no-scorer terminal). Mid-game steps stay at 0.
+            terminated = result["terminated"] | (scorer == 3)
+            truncated = (~terminated) & (self.ep_lengths >= self.max_steps)
+            draw = (terminated | truncated) & ~won & ~lost
+            reward = torch.where(
+                won, self.win_reward,
+                torch.where(
+                    lost, self.loss_reward,
+                    torch.where(draw, self.draw_reward, 0.0),
+                ),
+            ).to(torch.float32)
 
             # Potential-based shaping. Φ(s') evaluated at the new ball position,
             # BEFORE auto-reset zeroes it. On terminal steps we use Φ(terminal)=0
